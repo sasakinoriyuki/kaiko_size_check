@@ -4,7 +4,7 @@ import math
 
 import cv2
 import numpy as np
-from scipy.ndimage import gaussian_filter1d
+from scipy.ndimage import gaussian_filter1d, distance_transform_edt
 from skimage.morphology import skeletonize
 
 
@@ -102,9 +102,33 @@ def _extend(point, direction, mask):
     return end
 
 
-def centerline(mask):
+def centerline(mask, prune_short_spurs=False):
     """Accept only a single open, nonbranching skeleton; never infer a hidden body."""
     graph = _graph(skeletonize(mask > 0))
+    if prune_short_spurs:
+        # Only for a user-reviewed mask: trim short skeleton twigs caused by its
+        # ragged outline. Keep long branches and loops rejected, without joining gaps.
+        radii = distance_transform_edt(mask > 0)
+        for _ in range(8):
+            remove = set()
+            for end in [p for p, n in graph.items() if len(n) == 1]:
+                route, previous, current, length = [end], None, end, 0.0
+                while True:
+                    choices = [p for p in graph[current] if p != previous]
+                    if len(choices) != 1:
+                        break
+                    next_node = choices[0]
+                    length += float(np.linalg.norm(np.subtract(next_node, current)))
+                    previous, current = current, next_node
+                    if len(graph[current]) != 2:
+                        break
+                    route.append(current)
+                if len(graph[current]) > 2 and length <= radii[current]:
+                    remove.update(route)
+            if not remove:
+                break
+            graph = {p: [n for n in neighbors if n not in remove]
+                     for p, neighbors in graph.items() if p not in remove}
     ends = [p for p, n in graph.items() if len(n) == 1]
     if len(ends) != 2 or any(len(n) > 2 for n in graph.values()):
         return None, "branch_or_loop"

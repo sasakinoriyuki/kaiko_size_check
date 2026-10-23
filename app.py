@@ -80,7 +80,7 @@ class Capture:
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("蚕CHANNEL 体長チェック — 試作版")
+        root.title("蚕CHANNEL 体長チェック — 試作版・クリック補助付き")
         root.geometry("1380x930")
         root.minsize(1150, 800)
         self.capture = None
@@ -120,6 +120,10 @@ class App:
         self.ai_generation = getattr(self, "ai_generation", 0) + 1
         self.history = []
         self.last_log = -1e20
+        self.prompt_labels = []
+        self.prompt_candidates = []
+        self.prompt_selected = None
+        self.prompt_saved = False
 
     def build_ui(self):
         top = ttk.Frame(self.root, padding=8)
@@ -158,6 +162,12 @@ class App:
         ttk.Button(ai, text="AIで映像を繰り返し解析", command=self.start_ai_live).pack(side="left", padx=5)
         ttk.Button(ai, text="色と形の抽出に戻る", command=self.stop_ai).pack(side="left")
         ttk.Label(ai, text="追加AIセットアップが必要です。解析中は前回の静止結果を表示します。").pack(side="left", padx=8)
+        guided = ttk.Frame(self.root, padding=(8, 2))
+        guided.pack(fill="x")
+        ttk.Button(guided, text="蚕をクリックして拾い直す", command=lambda: self.begin("ai_point")).pack(side="left")
+        ttk.Button(guided, text="指定した点で再検出", command=self.request_prompt).pack(side="left", padx=5)
+        ttk.Button(guided, text="全身を確認して保存", command=self.finish_prompt).pack(side="left")
+        ttk.Label(guided, text="左クリック：体／右クリック：背景。右の候補一覧で切替。全自動解析とは別の補助測定です。").pack(side="left", padx=8)
         manual = ttk.Frame(self.root, padding=(8, 5))
         manual.pack(fill="x")
         ttk.Button(manual, text="③ 手動で体長をなぞる", command=lambda: self.begin("manual")).pack(side="left")
@@ -187,6 +197,7 @@ class App:
         self.canvas = tk.Canvas(content, width=960, height=540, bg="#15201d", highlightthickness=0)
         self.canvas.pack(side="left", anchor="n", fill="both", expand=True)
         self.canvas.bind("<Button-1>", self.click)
+        self.canvas.bind("<Button-3>", self.click)
         self.canvas.bind("<Configure>", lambda event: self.render())
         side = ttk.Frame(content, width=300, padding=(12, 0))
         side.pack(side="right", fill="y")
@@ -194,6 +205,7 @@ class App:
         ttk.Label(side, textvariable=self.result, font=("Yu Gothic UI", 13), justify="left").pack(anchor="w")
         self.items = tk.Listbox(side, width=32, height=8)
         self.items.pack(fill="x", pady=10)
+        self.items.bind("<<ListboxSelect>>", self.select_prompt)
         ttk.Label(side, text="緑：未確認の候補線　橙：除外領域\n候補の個数は蚕の匹数ではありません。\n番号はこの画面内の仮番号です。", wraplength=280).pack(anchor="w")
         ttk.Label(side, text="候補線の平均長（未確認・この起動内）").pack(anchor="w", pady=(16, 3))
         self.chart = tk.Canvas(side, width=280, height=150, bg="white", highlightthickness=0)
@@ -228,6 +240,8 @@ class App:
         self.calibration_points = []
         self.roi = None
         self.points = []
+        self.prompt_labels, self.prompt_candidates = [], []
+        self.prompt_selected, self.prompt_saved = None, False
         self.candidates = []
         self.mask = None
         self.latest_acquired = None
@@ -291,24 +305,40 @@ class App:
         self.mode = mode
         self.ai_generation += 1
         self.points = []
+        self.prompt_labels, self.prompt_candidates = [], []
+        self.prompt_selected, self.prompt_saved = None, False
+        self.ai_pending = False
+        if mode == "ai_point":
+            self.mask = None
         self.show_mask.set(False)
         self.items.delete(0, "end")
         self.result.set("一時停止・操作中\n自動測定の更新を停止しています。")
         self.write_obs("蚕CHANNEL | 設定・手動測定中 | 自動測定値なし")
         descriptions = {"calibrate": "基準の長さをmmで入力し、映像内の基準線の両端をクリックしてください。",
                         "roi": "測定範囲の左上と右下をクリックしてください。定規や配信UIを範囲から外します。",
-                        "manual": "一時停止しました。頭の先から尾の先まで、体の中央を曲がりに沿って順にクリックし、確定してください。隠れた部分は測れません。"}
+                        "manual": "一時停止しました。頭の先から尾の先まで、体の中央を曲がりに沿って順にクリックし、確定してください。隠れた部分は測れません。",
+                        "ai_point": "一時停止しました。1匹の体の上を左クリックし、『指定した点で再検出』を押します。体に点を追加、背景を右クリックして絞り込めます。"}
         self.tell(descriptions[mode])
         self.render()
 
     def click(self, event):
         if self.frame is None or self.mode == "auto":
             return
+        if getattr(event, "num", 1) == 3 and self.mode != "ai_point":
+            return
         x, y = event.x / self.display_scale, event.y / self.display_scale
         h, w = self.frame.shape[:2]
         if not (0 <= x < w and 0 <= y < h):
             return
+        if self.mode == "ai_point" and self.roi:
+            x0, y0, x1, y1 = self.roi
+            if not (x0 <= x < x1 and y0 <= y < y1):
+                self.tell("蚕と背景の点は、青い測定範囲の枠内に置いてください。")
+                return
         self.points.append((x, y))
+        if self.mode == "ai_point":
+            self.prompt_labels.append(0 if getattr(event, "num", 1) == 3 else 1)
+            self.invalidate_prompt()
         if self.mode == "calibrate" and len(self.points) == 2:
             try:
                 ppmm = calibrate(self.points, float(self.known.get()))
@@ -339,7 +369,102 @@ class App:
     def undo(self):
         if self.points:
             self.points.pop()
+            if self.mode == "ai_point":
+                self.prompt_labels.pop()
+                self.invalidate_prompt()
             self.render()
+
+    def invalidate_prompt(self):
+        self.ai_generation += 1
+        self.prompt_candidates = []
+        self.prompt_selected, self.prompt_saved = None, False
+        self.items.delete(0, "end")
+        self.result.set("AI補助・点を指定中\n『指定した点で再検出』を押してください。")
+        self.write_obs("蚕CHANNEL | AI補助の候補を指定中 | 体長の測定値なし")
+
+    def request_prompt(self):
+        if self.mode != "ai_point" or not any(self.prompt_labels):
+            self.tell("『蚕をクリックして拾い直す』を押し、1匹の体の上を左クリックしてください。")
+            return
+        if self.ai_worker is None:
+            self.ai_worker = AIWorker()
+        if self.ai_worker.busy:
+            self.tell("前のAI処理が動いています。完了後に『指定した点で再検出』を押してください。")
+            return
+        self.invalidate_prompt()
+        job = AIJob(self.frame.copy(), self.position, self.settings, self.roi,
+                    (self.series, self.ai_generation), tuple(self.points), tuple(self.prompt_labels))
+        if self.ai_worker.submit(job):
+            self.tell("指定した蚕の候補を解析中です。同じ静止画での再検出には画像の解析結果を再利用します。")
+
+    def poll_prompt(self, result):
+        job = result["job"]
+        if self.mode != "ai_point" or job.token != (self.series, self.ai_generation):
+            if self.mode == "ai_point":
+                self.tell("前のAI処理が終わりました。現在の点で『指定した点で再検出』を押してください。")
+            return
+        if result["error"] is not None:
+            self.tell(result["error"])
+            self.result.set("AI補助を実行できませんでした。\n上の案内を確認してください。")
+            return
+        self.frame, self.position = job.frame, job.position
+        self.prompt_candidates = result["candidates"]
+        self.items.delete(0, "end")
+        for i, c in enumerate(self.prompt_candidates):
+            length = f"{c.length_px / (self.ppmm or 1):.1f} {'mm' if self.ppmm else 'px'}" if c.length_px is not None else "中心線を作れません"
+            self.items.insert("end", f"拾い直し {i+1}   {length}")
+        if self.prompt_candidates:
+            self.items.selection_set(0)
+            self.show_prompt(0)
+            self.tell(f"拾い直し完了（{result['device']}・{result['seconds']:.1f}秒）。右の一覧で候補を切り替え、頭から尾までの輪郭と線を確認してください。")
+        else:
+            self.result.set("指定した点に合う候補がありません。\n体の別の場所に点を追加して再検出します。")
+            self.tell("候補がありません。点を追加するか『1点戻す』で指定を変え、再検出してください。")
+        self.render()
+
+    def select_prompt(self, _event=None):
+        if self.mode == "ai_point":
+            selection = self.items.curselection()
+            if selection:
+                self.show_prompt(selection[0])
+
+    def show_prompt(self, index):
+        if not 0 <= index < len(self.prompt_candidates):
+            return
+        if self.prompt_selected != index:
+            self.prompt_saved = False
+        self.prompt_selected = index
+        c = self.prompt_candidates[index]
+        if c.length_px is None:
+            self.result.set("AI補助・未確認の輪郭\n中心線を作れないため保存できません。\n体と背景の点を追加して再検出してください。")
+        else:
+            unit = "mm" if self.ppmm is not None else "px"
+            state = "全身を手動確認・CSV保存済み" if self.prompt_saved else "未確認の候補"
+            self.result.set(f"AI補助・{state}\n中心線長 {c.length_px / (self.ppmm or 1):.1f} {unit}\n頭から尾までの全身か確認してください。\n部分的な体は保存しないでください。")
+        if not self.prompt_saved:
+            self.write_obs("蚕CHANNEL | AI補助の候補を確認中 | 体長の測定値なし")
+        self.render()
+
+    def finish_prompt(self):
+        if self.mode != "ai_point" or self.prompt_selected is None:
+            self.tell("先に蚕をクリックして再検出し、右の候補一覧から全身を捉えた候補を選んでください。")
+            return
+        c = self.prompt_candidates[self.prompt_selected]
+        if c.length_px is None:
+            self.tell("中心線を作れない候補は保存できません。点を追加して再検出するか、手動でなぞってください。")
+            return
+        if self.prompt_saved:
+            self.tell("この候補は既にCSVへ保存しました。別の蚕は『蚕をクリックして拾い直す』から始めます。")
+            return
+        length = c.length_px / (self.ppmm or 1)
+        unit = "mm" if self.ppmm is not None else "px"
+        stats = {"count": 1, "excluded_regions": 0, "unit": unit,
+                 "mean": length, "min": length, "max": length, "lengths": [length]}
+        if self.log(stats, "sam_assisted", c.path.tolist()):
+            self.prompt_saved = True
+            self.result.set(f"AI補助・全身を手動確認\n中心線長 {length:.1f} {unit}\nCSVに保存しました。\n自動候補の集計には含めません。")
+            self.write_obs(f"蚕CHANNEL | AI補助・手動確認の静止値 {length:.1f} {unit}")
+            self.tell("CSVに保存しました。『検証画像を保存』を押すと、指定した点・選択した輪郭もJSONに残せます。")
 
     def finish_manual(self):
         if self.mode != "manual" or len(self.points) < 2:
@@ -398,12 +523,21 @@ class App:
             "source": self.source, "video_seconds": self.position,
             "source_resolution": [w, h], "crop_xyxy": [x0, y0, x1, y1],
             "pixels_per_mm": self.ppmm, "settings": self.settings.dictionary(),
-            "candidate_method": "mobile_sam" if getattr(self, "ai_mode", "off") != "off" else "threshold",
+            "candidate_method": "mobile_sam" if self.mode == "ai_point" or getattr(self, "ai_mode", "off") != "off" else "threshold",
             "candidate_status": "unverified",
             "calibration_points_source_xy": self.calibration_points,
             "manual_points_source_xy": self.points if self.mode == "manual" else [],
             "note": "Source pixels without overlays. Detection candidates are not ground-truth labels.",
         }
+        if self.mode == "ai_point" and self.prompt_selected is not None:
+            c = self.prompt_candidates[self.prompt_selected]
+            metadata["assisted_selection"] = {
+                "status": "user_confirmed" if self.prompt_saved else "unverified",
+                "prompt_points_source_xy": self.points, "prompt_labels": self.prompt_labels,
+                "contour_source_xy": c.contour.reshape(-1, 2).tolist(),
+                "centerline_source_xy": c.path.tolist() if c.path is not None else None,
+                "length_px": c.length_px,
+            }
         try:
             directory.mkdir(exist_ok=True)
             ok, encoded = cv2.imencode(".png", cropped)
@@ -477,6 +611,7 @@ class App:
 
     def stop_ai(self):
         self.ai_mode, self.ai_failed, self.ai_pending = "off", False, False
+        self.mode, self.points = "auto", []
         self.new_series()
         self.process()
         self.tell("色と形による試験的な抽出に戻りました。蚕の認識は未確認です。")
@@ -503,10 +638,15 @@ class App:
         if result is None:
             return
         job = result["job"]
+        if job.prompt_points is not None:
+            self.poll_prompt(result)
+            return
         current = (self.series, self.ai_generation)
         if (job.token != current or self.mode != "auto" or self.ai_mode == "off"
                 or (self.ai_mode == "live" and self.ended)):
-            if self.ai_pending and self.mode == "auto" and self.ai_mode != "off":
+            if self.mode == "ai_point":
+                self.tell("前のAI処理が終わりました。現在の点で『指定した点で再検出』を押してください。")
+            elif self.ai_pending and self.mode == "auto" and self.ai_mode != "off":
                 self.ai_pending = False
                 self.process()
             return
@@ -602,7 +742,10 @@ class App:
             x0, y0, x1, y1 = self.roi or (0, 0, frame.shape[1], frame.shape[0])
             frame[y0:y1, x0:x1] = cv2.cvtColor(self.mask, cv2.COLOR_GRAY2BGR)
         number = 0
-        for c in self.candidates if self.mode == "auto" else []:
+        shown = self.candidates if self.mode == "auto" else []
+        if self.mode == "ai_point" and self.prompt_selected is not None:
+            shown = [self.prompt_candidates[self.prompt_selected]]
+        for c in shown:
             color = (80, 220, 100) if c.length_px is not None else (0, 165, 255)
             cv2.drawContours(frame, [c.contour], -1, color, 1)
             if c.path is not None:
@@ -619,9 +762,12 @@ class App:
             cv2.line(frame, tuple(pts[0]), tuple(pts[1]), (255, 180, 30), 2)
         if self.points:
             pts = np.rint(self.points).astype(np.int32)
-            for p in pts:
-                cv2.circle(frame, tuple(p), 4, (240, 80, 220), -1)
-            cv2.polylines(frame, [pts], False, (240, 80, 220), 2)
+            for i, p in enumerate(pts):
+                color = ((60, 220, 60) if self.prompt_labels[i] else (40, 60, 255)) if self.mode == "ai_point" else (240, 80, 220)
+                cv2.circle(frame, tuple(p), 5, (0, 0, 0), -1)
+                cv2.circle(frame, tuple(p), 3, color, -1)
+            if self.mode != "ai_point":
+                cv2.polylines(frame, [pts], False, (240, 80, 220), 2)
         h, w = frame.shape[:2]
         self.display_scale = min(max(320, self.canvas.winfo_width()) / w,
                                  max(240, self.canvas.winfo_height()) / h, 1.5)

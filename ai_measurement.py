@@ -34,6 +34,79 @@ def content_view(frame, roi=None):
     return view[top:bottom, left:right], (x0 + left, y0 + top)
 
 
+def mask_geometry(mask, settings, offset=(0, 0), guided=False):
+    """Measure one mask; a prompt or model score never establishes a complete body."""
+    mask = np.asarray(mask, dtype=np.uint8)
+    area = int(np.count_nonzero(mask))
+    if not settings.min_area <= area <= settings.max_area:
+        return None
+    ys, xs = np.nonzero(mask)
+    if not len(xs):
+        return None
+    x, y, x1, y1 = int(xs.min()), int(ys.min()), int(xs.max())+1, int(ys.max())+1
+    part = mask[y:y1, x:x1]
+    contours, _ = cv2.findContours(part, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contour = max(contours, key=cv2.contourArea) + np.array([x+offset[0], y+offset[1]])
+    path, length, reason = None, None, "edge"
+    h, w = mask.shape
+    if len(contours) != 1:
+        reason = "disconnected"
+    elif x > 2 and y > 2 and x1 < w-2 and y1 < h-2:
+        path, reason = centerline(np.pad(part, 2), prune_short_spurs=guided)
+        if path is not None:
+            length = polyline_length(path)
+            if length*length/area < settings.min_aspect:
+                path, length, reason = None, None, "shape"
+            else:
+                path += np.array([x+offset[0]-2, y+offset[1]-2])
+    return {"candidate": Candidate(contour, path, length, reason),
+            "mask": part.astype(bool), "area": area, "box": (x, y, x1, y1)}
+
+
+def prompted_candidates(view, masks, scores, points, labels, settings, offset=(0, 0)):
+    """Keep alternatives separate; require that every user constraint is respected."""
+    settings.validate()
+    points = np.asarray(points, dtype=float)
+    labels = np.asarray(labels, dtype=int)
+    if (points.ndim != 2 or points.shape[1] != 2 or len(points) != len(labels)
+            or not np.isfinite(points).all() or not np.isin(labels, [0, 1]).all()
+            or not np.any(labels == 1)):
+        raise ValueError("体の上を少なくとも1点指定してください。")
+    h, w = view.shape[:2]
+    local = points - np.asarray(offset)
+    if np.any(local < 0) or np.any(local[:, 0] >= w) or np.any(local[:, 1] >= h):
+        raise ValueError("点は測定範囲の映像内に置いてください。")
+    indices = local.astype(int)
+    candidates = []
+    for i in np.argsort(scores)[::-1]:
+        mask = np.asarray(masks[i], dtype=bool)
+        if mask.shape != (h, w):
+            raise ValueError("AIの領域と入力画像のサイズが一致しません。")
+        if not np.array_equal(mask[indices[:, 1], indices[:, 0]], labels.astype(bool)):
+            continue
+        # Keep only the connected body containing all positive points. Unrelated
+        # islands are not part of that body; never bridge two disconnected pieces.
+        _, components = cv2.connectedComponents(mask.astype(np.uint8), connectivity=8)
+        positive = indices[labels == 1]
+        target = components[positive[0, 1], positive[0, 0]]
+        if not np.all(components[positive[:, 1], positive[:, 0]] == target):
+            continue
+        selected = (components == target).astype(np.uint8)
+        # Match the automatic generator's small-hole cleanup, preserving holes
+        # explicitly marked as background by the user.
+        count, holes, stats, _ = cv2.connectedComponentsWithStats(1-selected, connectivity=8)
+        protected = set(holes[indices[labels == 0, 1], indices[labels == 0, 0]])
+        protected.update(holes[0, :]); protected.update(holes[-1, :])
+        protected.update(holes[:, 0]); protected.update(holes[:, -1])
+        for component in range(1, count):
+            if component not in protected and stats[component, cv2.CC_STAT_AREA] < 250:
+                selected[holes == component] = 1
+        proposal = mask_geometry(selected, settings, offset, guided=True)
+        if proposal is not None:
+            candidates.append(proposal["candidate"])
+    return candidates
+
+
 def candidates_from_masks(view, regions, settings, offset=(0, 0)):
     """Use independent masks instead of merging every white pixel into one region."""
     settings.validate()
@@ -62,19 +135,9 @@ def candidates_from_masks(view, regions, settings, offset=(0, 0)):
             continue
         if settings.appearance == "dark" and median_v > settings.brightness:
             continue
-        contours, _ = cv2.findContours(part, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contour = max(contours, key=cv2.contourArea) + np.array([x+offset[0], y+offset[1]])
-        path, length, reason = None, None, "edge"
-        if x > 2 and y > 2 and x1 < w-2 and y1 < h-2:
-            path, reason = centerline(np.pad(part, 2))
-            if path is not None:
-                length = polyline_length(path)
-                if length*length/area < settings.min_aspect:
-                    path, length, reason = None, None, "shape"
-                else:
-                    path += np.array([x+offset[0]-2, y+offset[1]-2])
-        proposals.append({"candidate": Candidate(contour, path, length, reason),
-                          "mask": part.astype(bool), "area": area, "box": (x, y, x1, y1)})
+        proposal = mask_geometry(mask, settings, offset)
+        if proposal is not None:
+            proposals.append(proposal)
 
     # A fragment inside a complete accepted mask must not be counted twice.
     accepted = []
@@ -117,7 +180,7 @@ class LocalSegmenter:
             raise RuntimeError("AIモデルの内容が一致しません。setup_ai_windows.bat で取得し直してください。")
         try:
             import torch
-            from mobile_sam import sam_model_registry, SamAutomaticMaskGenerator
+            from mobile_sam import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
         except (ImportError, OSError) as exc:
             raise RuntimeError("AIライブラリを読み込めません。setup_ai_windows.bat を実行し、アプリを再起動してください。") from exc
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -129,6 +192,8 @@ class LocalSegmenter:
         self.generator = SamAutomaticMaskGenerator(
             model, points_per_side=16, points_per_batch=8,
             pred_iou_thresh=.88, stability_score_thresh=.92, min_mask_region_area=250)
+        self.predictor = SamPredictor(model)
+        self.prompt_image_key = None
 
     def analyze(self, frame, settings, roi=None):
         view, offset = content_view(frame, roi)
@@ -138,6 +203,20 @@ class LocalSegmenter:
         regions = self.generator.generate(rgb)
         return candidates_from_masks(view, regions, settings, offset), self.device
 
+    def prompt(self, frame, settings, roi, points, labels):
+        view, offset = content_view(frame, roi)
+        if view is None:
+            return [], self.device
+        # Same still image: reuse the embedding when the user adds another point.
+        key = (view.shape, hashlib.sha256(view.tobytes()).digest())
+        if key != self.prompt_image_key:
+            self.predictor.set_image(cv2.cvtColor(view, cv2.COLOR_BGR2RGB))
+            self.prompt_image_key = key
+        masks, scores, _ = self.predictor.predict(
+            point_coords=np.asarray(points, dtype=np.float32)-np.asarray(offset),
+            point_labels=np.asarray(labels, dtype=np.int32), multimask_output=True)
+        return prompted_candidates(view, masks, scores, points, labels, settings, offset), self.device
+
 
 @dataclass
 class AIJob:
@@ -146,6 +225,8 @@ class AIJob:
     settings: object
     roi: tuple | None
     token: object
+    prompt_points: tuple | None = None
+    prompt_labels: tuple | None = None
 
 
 class AIWorker:
@@ -185,7 +266,11 @@ class AIWorker:
             try:
                 if self.engine is None:
                     self.engine = self.factory()
-                candidates, device = self.engine.analyze(job.frame, job.settings, job.roi)
+                if job.prompt_points is None:
+                    candidates, device = self.engine.analyze(job.frame, job.settings, job.roi)
+                else:
+                    candidates, device = self.engine.prompt(
+                        job.frame, job.settings, job.roi, job.prompt_points, job.prompt_labels)
                 result = {"job": job, "candidates": candidates, "device": device,
                           "seconds": time.monotonic()-start, "error": None}
             except Exception as exc:

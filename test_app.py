@@ -20,6 +20,9 @@ class FakeValue:
     def set(self, value):
         self.value = value
 
+    def get(self):
+        return self.value
+
     def delete(self, *_):
         pass
 
@@ -48,6 +51,10 @@ def headless_app(directory):
     app.status = FakeValue()
     app.result = FakeValue()
     app.render = lambda: None
+    app.show_mask = FakeValue()
+    app.ai_worker = None
+    app.ai_mode = "off"
+    app.ai_pending = False
     app.new_series()
     return app
 

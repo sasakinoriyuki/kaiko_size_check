@@ -9,7 +9,7 @@ import unittest
 import cv2
 import numpy as np
 
-from ai_measurement import AIJob, AIWorker, LocalSegmenter, candidates_from_masks, content_view
+from ai_measurement import AIJob, AIWorker, LocalSegmenter, candidates_from_masks, content_view, prompted_candidates
 from app import App
 from measurement import Settings, analyze, summarize
 from test_app import FakeValue, headless_app, read_rows
@@ -140,6 +140,148 @@ class AsyncTests(unittest.TestCase):
             self.assertIn("AI静止結果", app.result.value)
             self.assertEqual(read_rows(app.csv_path)[0]["method"], "sam_auto_candidate")
             self.assertIn("体長の測定値なし", app.obs_path.read_text(encoding="utf-8-sig"))
+
+
+class PromptTests(unittest.TestCase):
+    def test_all_positive_and_negative_constraints_are_required(self):
+        frame, region = capsule()
+        mask = region["segmentation"].astype(bool)
+        wrong = mask.copy()
+        wrong[80:140, 350:410] = True
+        candidates = prompted_candidates(frame, [wrong, mask], [.99, .8],
+                                          [(150, 120), (380, 100)], [1, 0], Settings())
+        self.assertEqual(len(candidates), 1)
+        self.assertAlmostEqual(candidates[0].length_px, 220, delta=6)
+
+    def test_prompt_roi_offsets_and_out_of_range_points(self):
+        frame, region = capsule()
+        view = frame[40:250, 50:450]
+        mask = region["segmentation"][40:250, 50:450]
+        candidates = prompted_candidates(view, [mask], [.9], [(150, 120)], [1], Settings(), (50, 40))
+        self.assertAlmostEqual(float(candidates[0].path[:, 1].mean()), 120, delta=1)
+        with self.assertRaisesRegex(ValueError, "測定範囲"):
+            prompted_candidates(view, [mask], [.9], [(30, 120)], [1], Settings(), (50, 40))
+        with self.assertRaisesRegex(ValueError, "少なくとも1点"):
+            prompted_candidates(view, [mask], [.9], [(150, 120)], [0], Settings(), (50, 40))
+
+    def test_disconnected_positive_points_are_never_joined(self):
+        frame, region = capsule()
+        mask = region["segmentation"].copy()
+        cv2.line(mask, (380, 100), (380, 200), 1, 18)
+        candidates = prompted_candidates(frame, [mask], [.9],
+                                          [(150, 120), (380, 150)], [1, 1], Settings())
+        self.assertEqual(candidates, [])
+
+    def test_unrelated_island_is_removed_but_long_crossing_is_still_rejected(self):
+        frame, region = capsule()
+        mask = region["segmentation"].copy()
+        mask[60:65, 400:405] = 1
+        candidates = prompted_candidates(frame, [mask], [.9], [(150, 120)], [1], Settings())
+        self.assertIsNotNone(candidates[0].length_px)
+        cv2.line(mask, (200, 60), (200, 200), 1, 18)
+        candidates = prompted_candidates(frame, [mask], [.9], [(150, 120)], [1], Settings())
+        self.assertIsNone(candidates[0].length_px)
+
+    def test_embedding_cache_is_reused_for_points_but_not_changed_image_pixels(self):
+        frame, region = capsule()
+
+        class Predictor:
+            calls = 0
+
+            def set_image(self, image):
+                self.calls += 1
+
+            def predict(self, **kwargs):
+                return [region["segmentation"]], [.9], None
+
+        engine = LocalSegmenter.__new__(LocalSegmenter)
+        engine.predictor = Predictor()
+        engine.prompt_image_key = None
+        engine.device = "fake"
+        engine.prompt(frame, Settings(), None, [(150, 120)], [1])
+        engine.prompt(frame.copy(), Settings(), None, [(170, 120)], [1])
+        self.assertEqual(engine.predictor.calls, 1)
+        changed = frame.copy()
+        changed[0, 0] = 0
+        engine.prompt(changed, Settings(), None, [(170, 120)], [1])
+        self.assertEqual(engine.predictor.calls, 2)
+
+    def test_worker_routes_prompt_jobs_without_running_automatic_generator(self):
+        class PromptEngine:
+            def prompt(self, frame, settings, roi, points, labels):
+                return [(points, labels)], "fake"
+
+        worker = AIWorker(PromptEngine)
+        frame, _ = capsule()
+        job = AIJob(frame, None, Settings(), None, "prompt", ((150, 120),), (1,))
+        try:
+            self.assertTrue(worker.submit(job))
+            result = worker.results.get(timeout=3)
+            self.assertIsNone(result["error"])
+            self.assertEqual(result["candidates"], [(((150, 120),), (1,))])
+        finally:
+            worker.close()
+            worker.thread.join(timeout=1)
+
+    def prepared_app(self, directory):
+        app = headless_app(directory)
+        app.begin("ai_point")
+        app.frame, region = capsule()
+        app.points, app.prompt_labels = [(150, 120)], [1]
+        app.prompt_candidates = prompted_candidates(app.frame, [region["segmentation"]], [.9],
+                                                     app.points, app.prompt_labels, Settings())
+        app.show_prompt(0)
+        return app
+
+    def test_prompt_is_not_logged_until_user_confirms_and_never_double_saves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = self.prepared_app(directory)
+            self.assertFalse(app.csv_path.exists())
+            self.assertIn("体長の測定値なし", app.obs_path.read_text(encoding="utf-8-sig"))
+            app.finish_prompt()
+            app.finish_prompt()
+            rows = read_rows(app.csv_path)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["method"], "sam_assisted")
+            self.assertEqual(rows[0]["count"], "1")
+            self.assertEqual(app.history, [])
+
+    def test_saved_sample_retains_prompts_outline_and_user_confirmation(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            app = self.prepared_app(directory)
+            app.finish_prompt()
+            path = app.save_sample()
+            metadata = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+            selection = metadata["assisted_selection"]
+            self.assertEqual(selection["status"], "user_confirmed")
+            self.assertEqual(selection["prompt_labels"], [1])
+            self.assertEqual(selection["prompt_points_source_xy"], [[150, 120]])
+            self.assertGreater(len(selection["centerline_source_xy"]), 2)
+
+    def test_adding_a_point_invalidates_inflight_result_and_previous_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = self.prepared_app(directory)
+            job = AIJob(app.frame.copy(), None, Settings(), None,
+                        (app.series, app.ai_generation), tuple(app.points), tuple(app.prompt_labels))
+            previous = app.prompt_candidates
+            app.invalidate_prompt()
+            app.poll_prompt({"job": job, "error": None, "candidates": previous})
+            self.assertEqual(app.prompt_candidates, [])
+            self.assertIsNone(app.prompt_selected)
+            self.assertFalse(app.prompt_saved)
+
+    def test_new_worm_clears_previous_points_selection_and_unsavable_mask(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = self.prepared_app(directory)
+            app.prompt_candidates[0].path = None
+            app.prompt_candidates[0].length_px = None
+            app.finish_prompt()
+            self.assertFalse(app.csv_path.exists())
+            app.begin("ai_point")
+            self.assertEqual(app.points, [])
+            self.assertEqual(app.prompt_labels, [])
+            self.assertIsNone(app.prompt_selected)
 
 
 if __name__ == "__main__":
