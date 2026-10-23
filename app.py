@@ -16,6 +16,7 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from measurement import Settings, analyze, calibrate, channel_roi, demo_frame, polyline_length, summarize
+from ai_measurement import AIJob, AIWorker
 
 BASE = Path(__file__).resolve().parent
 
@@ -104,6 +105,10 @@ class App:
         self.obs_path = self.data / "obs_status.txt"
         self.csv_path = self.data / "measurements.csv"
         self.io_error = ""
+        self.ai_worker = None
+        self.ai_mode = "off"
+        self.ai_failed = False
+        self.ai_pending = False
         self.new_series()
         self.build_ui()
         self.set_static(demo_frame(), self.source)
@@ -112,6 +117,7 @@ class App:
 
     def new_series(self):
         self.series = uuid.uuid4().hex[:12]
+        self.ai_generation = getattr(self, "ai_generation", 0) + 1
         self.history = []
         self.last_log = -1e20
 
@@ -146,6 +152,12 @@ class App:
         ttk.Combobox(layouts, textvariable=self.appearance, values=["明るい蚕", "暗い蚕"],
                      state="readonly", width=12).pack(side="left")
         ttk.Label(layouts, text="齢によらず選択し、検出設定を適用してください。").pack(side="left", padx=8)
+        ai = ttk.Frame(self.root, padding=(8, 5))
+        ai.pack(fill="x")
+        ttk.Button(ai, text="AIでこの画面を解析", command=self.start_ai_once).pack(side="left")
+        ttk.Button(ai, text="AIで映像を繰り返し解析", command=self.start_ai_live).pack(side="left", padx=5)
+        ttk.Button(ai, text="色と形の抽出に戻る", command=self.stop_ai).pack(side="left")
+        ttk.Label(ai, text="追加AIセットアップが必要です。解析中は前回の静止結果を表示します。").pack(side="left", padx=8)
         manual = ttk.Frame(self.root, padding=(8, 5))
         manual.pack(fill="x")
         ttk.Button(manual, text="③ 手動で体長をなぞる", command=lambda: self.begin("manual")).pack(side="left")
@@ -222,6 +234,7 @@ class App:
         self.mode = "auto"
         self.paused = False
         self.ended = False
+        self.ai_mode, self.ai_failed, self.ai_pending = "off", False, False
         self.new_series()
         self.items.delete(0, "end")
         self.result.set("映像待ち・基準未設定（px）")
@@ -276,6 +289,7 @@ class App:
         if self.capture:
             self.capture.pause.set()
         self.mode = mode
+        self.ai_generation += 1
         self.points = []
         self.show_mask.set(False)
         self.items.delete(0, "end")
@@ -384,6 +398,8 @@ class App:
             "source": self.source, "video_seconds": self.position,
             "source_resolution": [w, h], "crop_xyxy": [x0, y0, x1, y1],
             "pixels_per_mm": self.ppmm, "settings": self.settings.dictionary(),
+            "candidate_method": "mobile_sam" if getattr(self, "ai_mode", "off") != "off" else "threshold",
+            "candidate_status": "unverified",
             "calibration_points_source_xy": self.calibration_points,
             "manual_points_source_xy": self.points if self.mode == "manual" else [],
             "note": "Source pixels without overlays. Detection candidates are not ground-truth labels.",
@@ -425,6 +441,9 @@ class App:
             self.tell("映像を開いてください。録画の終端・切断後は入力を開き直します。")
             return
         self.paused = not self.paused if self.mode == "auto" else False
+        self.ai_generation += 1
+        if getattr(self, "ai_mode", "off") == "single" and not self.paused and self.capture:
+            self.ai_mode = "live"
         self.mode, self.points = "auto", []
         if self.capture:
             if self.paused:
@@ -433,6 +452,77 @@ class App:
                 self.capture.pause.clear()
         self.process()
         self.tell("一時停止中です。" if self.paused else "試験的な候補抽出中です。蚕の認識は未確認です。")
+
+    def start_ai_once(self):
+        if self.frame is None:
+            self.tell("先に画像または映像を開いてください。")
+            return
+        self.paused = True
+        if self.capture:
+            self.capture.pause.set()
+        self.ai_mode, self.ai_failed = "single", False
+        self.mode, self.points = "auto", []
+        self.new_series()
+        self.request_ai(self.frame, self.position)
+
+    def start_ai_live(self):
+        if not self.capture or self.ended or self.frame is None:
+            self.tell("カメラまたは録画を開いてから使います。静止画には『AIでこの画面を解析』を使ってください。")
+            return
+        self.ai_mode, self.ai_failed = "live", False
+        self.mode, self.points, self.paused = "auto", [], False
+        self.capture.pause.clear()
+        self.new_series()
+        self.request_ai(self.frame, self.position)
+
+    def stop_ai(self):
+        self.ai_mode, self.ai_failed, self.ai_pending = "off", False, False
+        self.new_series()
+        self.process()
+        self.tell("色と形による試験的な抽出に戻りました。蚕の認識は未確認です。")
+
+    def request_ai(self, frame, position):
+        if self.ai_failed or self.mode != "auto":
+            return
+        if self.ai_worker is None:
+            self.ai_worker = AIWorker()
+        if self.ai_worker.busy:
+            self.ai_pending = True
+            return
+        job = AIJob(frame.copy(), position, self.settings, self.roi,
+                    (self.series, self.ai_generation))
+        if self.ai_worker.submit(job):
+            self.ai_pending = False
+            self.tell("AI解析中です。CPUでは数十秒かかる場合があります。表示中の輪郭は前回の静止結果です。")
+            self.write_obs("蚕CHANNEL | AI候補を解析中\n蚕の認識は未確認・体長の測定値なし")
+
+    def poll_ai(self):
+        if self.ai_worker is None:
+            return
+        result = self.ai_worker.receive()
+        if result is None:
+            return
+        job = result["job"]
+        current = (self.series, self.ai_generation)
+        if (job.token != current or self.mode != "auto" or self.ai_mode == "off"
+                or (self.ai_mode == "live" and self.ended)):
+            if self.ai_pending and self.mode == "auto" and self.ai_mode != "off":
+                self.ai_pending = False
+                self.process()
+            return
+        if result["error"] is not None:
+            self.ai_failed = True
+            self.tell(result["error"])
+            self.result.set("AI解析を実行できませんでした。\n上の案内を確認してください。")
+            self.write_obs("蚕CHANNEL | AI解析を実行できません\n体長の測定値なし")
+            return
+        # Draw masks only on the exact frame sent to the worker.
+        self.frame, self.position = job.frame, job.position
+        self.candidates, self.mask = result["candidates"], None
+        self.show_mask.set(False)
+        prefix = f"AI静止結果（{result['device']}・{result['seconds']:.1f}秒）\n"
+        self.publish_candidates("sam_auto_candidate", prefix, self.ai_mode == "single")
+        self.tell(f"AI解析が完了しました（{result['seconds']:.1f}秒）。緑の線が蚕の全身をたどるか確認してください。部分的な体や誤検出も残ります。")
 
     def log(self, stats, method="auto_candidate", points=None):
         row = {
@@ -464,13 +554,23 @@ class App:
     def process(self):
         if self.frame is None:
             return
+        if getattr(self, "ai_mode", "off") != "off":
+            if self.ai_mode == "live" and self.paused:
+                self.result.set("AIの繰り返し解析を一時停止中\n再生すると現在の設定で解析します。")
+                self.write_obs("蚕CHANNEL | AI解析を一時停止中\n体長の測定値なし")
+                return
+            self.request_ai(self.frame, self.position)
+            return
         self.candidates, self.mask = analyze(self.frame, self.settings, self.roi)
+        self.publish_candidates()
+
+    def publish_candidates(self, method="auto_candidate", prefix="", force_record=False):
         stats = summarize(self.candidates, self.ppmm)
         unit = stats["unit"]
         mean = f"{stats['mean']:.1f} {unit}" if stats["mean"] is not None else "--"
         span = f"{stats['min']:.1f}〜{stats['max']:.1f} {unit}" if stats["count"] else "--"
         scale = "基準設定済み" if self.ppmm is not None else "基準未設定（px）"
-        self.result.set(f"未確認候補 {stats['count']} 領域\n候補線の平均長 {mean}\n最小〜最大 {span}\n除外領域 {stats['excluded_regions']} 個\n{scale}\n※蚕の匹数・体長ではありません")
+        self.result.set(prefix + f"未確認候補 {stats['count']} 領域\n候補線の平均長 {mean}\n最小〜最大 {span}\n除外領域 {stats['excluded_regions']} 個\n{scale}\n※蚕の匹数・体長ではありません")
         self.items.delete(0, "end")
         n = 0
         for c in self.candidates:
@@ -480,9 +580,10 @@ class App:
         state = "停止・静止値" if self.paused or self.ended else ("候補抽出中" if self.capture else "静止画")
         self.write_obs(f"蚕CHANNEL | {state}\n自動検出を調整中・蚕の認識は未確認\n体長の測定値なし")
         now = time.monotonic()
-        if not self.paused and not self.ended and now - self.last_log >= 10 and not self.source.startswith("デモ"):
+        automatic_due = not self.paused and not self.ended and now - self.last_log >= 10
+        if (automatic_due or force_record) and not self.source.startswith("デモ"):
             self.last_log = now
-            self.log(stats)
+            self.log(stats, method)
             # Keep a fixed 600-sample window, including gaps when no body is measurable.
             self.history.append((now, stats["mean"]))
             self.history = self.history[-600:]
@@ -556,12 +657,14 @@ class App:
         self.chart.create_text(260, 143, text=f"{(end-start)/60:.1f}分間", anchor="e")
 
     def tick(self):
+        self.poll_ai()
         if self.capture:
             try:
                 frame, position, acquired = self.capture.frames.get_nowait()
             except queue.Empty:
                 if self.capture.terminal and not self.ended:
                     self.ended = True
+                    self.ai_generation += 1
                     self.write_obs("蚕CHANNEL | 映像停止 | 現在の測定値なし")
                     self.tell(self.capture.terminal)
             else:
@@ -570,11 +673,16 @@ class App:
                     if self.frame is None or time.monotonic() - self.last_analysis >= .5:
                         if self.frame is not None and frame.shape[:2] != self.frame.shape[:2]:
                             self.ppmm, self.calibration_points, self.roi = None, [], None
+                            self.frame, self.candidates, self.mask = None, [], None
                             self.new_series()
                             self.tell("映像解像度が変わったため、基準と範囲を解除しました。")
-                        self.frame, self.position = frame, position
                         self.last_analysis = time.monotonic()
-                        self.process()
+                        if self.ai_mode == "live":
+                            if not self.ai_worker or not self.ai_worker.busy:
+                                self.request_ai(frame, position)
+                        else:
+                            self.frame, self.position = frame, position
+                            self.process()
             if self.capture.camera and not self.paused and not self.ended:
                 # Drivers sometimes block without reporting an error. Never retain a live value forever.
                 if self.latest_acquired is not None and time.monotonic() - self.latest_acquired > 5:
@@ -583,6 +691,8 @@ class App:
 
     def close(self):
         self.stop_capture()
+        if self.ai_worker:
+            self.ai_worker.close()
         self.write_obs("蚕CHANNEL | アプリ終了 | 測定値なし")
         self.root.destroy()
 
