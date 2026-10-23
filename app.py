@@ -182,11 +182,11 @@ class App:
         ttk.Label(side, textvariable=self.result, font=("Yu Gothic UI", 13), justify="left").pack(anchor="w")
         self.items = tk.Listbox(side, width=32, height=8)
         self.items.pack(fill="x", pady=10)
-        ttk.Label(side, text="緑：測定候補　橙：集計から除外\n番号はその画面だけの仮番号です。\n同じ個体の追跡は行いません。", wraplength=280).pack(anchor="w")
-        ttk.Label(side, text="平均体長の推移（この設定・この起動内）").pack(anchor="w", pady=(16, 3))
+        ttk.Label(side, text="緑：未確認の候補線　橙：除外領域\n候補の個数は蚕の匹数ではありません。\n番号はこの画面内の仮番号です。", wraplength=280).pack(anchor="w")
+        ttk.Label(side, text="候補線の平均長（未確認・この起動内）").pack(anchor="w", pady=(16, 3))
         self.chart = tk.Canvas(side, width=280, height=150, bg="white", highlightthickness=0)
         self.chart.pack()
-        ttk.Label(side, text="見えている個体だけの参考値です。\n葉・発泡スチロールの誤検出を確認してください。\n同一個体の成長率を表すものではありません。", wraplength=280).pack(anchor="w", pady=6)
+        ttk.Label(side, text="蚕の認識精度は未確認です。\n葉・背景の誤検出も含みます。\n蚕の体長や成長の実測値としては使えません。", wraplength=280).pack(anchor="w", pady=6)
         ttk.Label(self.root, text="試作版：自動検出の実映像での精度は未検証です。身体が隠れている場合は全長を確定できません。", padding=8).pack(fill="x")
 
     def tell(self, text):
@@ -336,7 +336,7 @@ class App:
         stats = {"count": 1, "excluded_regions": 0, "unit": unit,
                  "mean": length, "min": length, "max": length, "lengths": [length]}
         saved = self.log(stats, "manual", self.points)
-        self.result.set(f"手動測定\n体長 {length:.1f} {unit}\n自動平均には含めません。")
+        self.result.set(f"手動測定\n体長 {length:.1f} {unit}\n自動候補の集計には含めません。")
         self.write_obs(f"蚕CHANNEL | 手動測定・静止値 {length:.1f} {unit}")
         self.tell(f"手動体長 {length:.1f} {unit}。" + ("CSVに保存しました。" if saved else "保存に失敗しました。"))
 
@@ -432,9 +432,9 @@ class App:
             else:
                 self.capture.pause.clear()
         self.process()
-        self.tell("一時停止中です。" if self.paused else "自動測定中です。候補の誤検出を確認してください。")
+        self.tell("一時停止中です。" if self.paused else "試験的な候補抽出中です。蚕の認識は未確認です。")
 
-    def log(self, stats, method="auto", points=None):
+    def log(self, stats, method="auto_candidate", points=None):
         row = {
             "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
             "series": self.series, "source": self.source, "video_seconds": self.position,
@@ -470,15 +470,15 @@ class App:
         mean = f"{stats['mean']:.1f} {unit}" if stats["mean"] is not None else "--"
         span = f"{stats['min']:.1f}〜{stats['max']:.1f} {unit}" if stats["count"] else "--"
         scale = "基準設定済み" if self.ppmm is not None else "基準未設定（px）"
-        self.result.set(f"測定候補 {stats['count']} 匹\n平均体長 {mean}\n最小〜最大 {span}\n除外領域 {stats['excluded_regions']} 個\n{scale}")
+        self.result.set(f"未確認候補 {stats['count']} 領域\n候補線の平均長 {mean}\n最小〜最大 {span}\n除外領域 {stats['excluded_regions']} 個\n{scale}\n※蚕の匹数・体長ではありません")
         self.items.delete(0, "end")
         n = 0
         for c in self.candidates:
             if c.length_px is not None:
                 n += 1
                 self.items.insert("end", f"候補 {n:02d}   {c.length_px / (self.ppmm or 1):.1f} {unit}")
-        state = "停止・静止値" if self.paused or self.ended else ("自動測定" if self.capture else "静止画")
-        self.write_obs(f"蚕CHANNEL | {state}\n測定候補 {stats['count']}匹 | 平均体長 {mean}\n除外領域 {stats['excluded_regions']}個 | 参考値")
+        state = "停止・静止値" if self.paused or self.ended else ("候補抽出中" if self.capture else "静止画")
+        self.write_obs(f"蚕CHANNEL | {state}\n自動検出を調整中・蚕の認識は未確認\n体長の測定値なし")
         now = time.monotonic()
         if not self.paused and not self.ended and now - self.last_log >= 10 and not self.source.startswith("デモ"):
             self.last_log = now

@@ -80,9 +80,14 @@ class ApplicationTests(unittest.TestCase):
             rows = read_rows(app.csv_path)
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["unit"], "mm")
-            self.assertEqual(rows[0]["method"], "auto")
+            self.assertEqual(rows[0]["method"], "auto_candidate")
             self.assertEqual(rows[0]["count"], "2")
-            self.assertIn("平均体長", app.obs_path.read_text(encoding="utf-8-sig"))
+            obs = app.obs_path.read_text(encoding="utf-8-sig")
+            self.assertIn("蚕の認識は未確認", obs)
+            self.assertIn("体長の測定値なし", obs)
+            self.assertNotIn("平均体長", obs)
+            self.assertNotIn("匹", obs)
+            self.assertIn("未確認候補", app.result.value)
             app.process()  # The same frame must not produce a second automatic row immediately.
             self.assertEqual(len(read_rows(app.csv_path)), 1)
 
