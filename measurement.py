@@ -16,8 +16,11 @@ class Settings:
     max_area: int = 100000
     min_aspect: float = 3.0
     appearance: str = "light"
+    ai_search: str = "standard"
 
     def validate(self):
+        if self.ai_search not in {"standard", "fine"}:
+            raise ValueError("AI探索は通常／詳細から選んでください。")
         if self.appearance not in {"light", "dark"}:
             raise ValueError("検出対象は明るい蚕／暗い蚕から選んでください。")
         if not (0 <= self.brightness <= 255 and 0 <= self.saturation <= 255):

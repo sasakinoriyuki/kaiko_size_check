@@ -5,6 +5,8 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
+from zipfile import ZipFile
 
 import cv2
 import numpy as np
@@ -71,14 +73,26 @@ class ApplicationTests(unittest.TestCase):
             app.roi = (50, 30, 650, 400)
             path = app.save_sample()
             self.assertIsNotNone(path)
-            saved = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
+            self.assertEqual(path.suffix, ".zip")
+            with ZipFile(path) as archive:
+                self.assertEqual(len(archive.namelist()), 2)
+                saved = cv2.imdecode(np.frombuffer(archive.read(path.stem+".png"), dtype=np.uint8), cv2.IMREAD_COLOR)
+                metadata = json.loads(archive.read(path.stem+".json"))
             np.testing.assert_array_equal(saved, app.frame[30:400, 50:650])
-            metadata = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+            self.assertEqual(list((app.data / "samples").iterdir()), [path])
             self.assertEqual(metadata["crop_xyxy"], [50, 30, 650, 400])
             self.assertEqual(metadata["source_resolution"], [960, 540])
             self.assertEqual(metadata["pixels_per_mm"], 10)
             self.assertEqual(metadata["settings"]["appearance"], "light")
             self.assertFalse(app.csv_path.exists())
+
+    def test_failed_sample_export_leaves_no_incomplete_zip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = headless_app(directory)
+            with patch("app.os.replace", side_effect=OSError("test write failure")):
+                self.assertIsNone(app.save_sample())
+            self.assertEqual(list((app.data / "samples").iterdir()), [])
+            self.assertIn("保存に失敗", app.status.value)
 
     def test_auto_csv_scale_and_obs_output(self):
         with tempfile.TemporaryDirectory() as directory:

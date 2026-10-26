@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from zipfile import ZipFile
 
 import cv2
 import numpy as np
@@ -25,6 +26,33 @@ def capsule():
 
 
 class MaskGeometryTests(unittest.TestCase):
+    def test_standard_and_fine_generators_use_original_roi_coordinates(self):
+        frame, region = capsule()
+        roi = (50, 40, 450, 250)
+        local_region = {**region, "segmentation": region["segmentation"][40:250, 50:450]}
+
+        class Generator:
+            def __init__(self):
+                self.calls = 0
+
+            def generate(self, image):
+                self.calls += 1
+                self.shape = image.shape
+                return [local_region]
+
+        engine = LocalSegmenter.__new__(LocalSegmenter)
+        engine.generator, engine.fine_generator = Generator(), Generator()
+        engine.device = "fake"
+        for mode in ["standard", "fine"]:
+            candidates, _ = engine.analyze(frame, Settings(ai_search=mode), roi)
+            self.assertEqual(summarize(candidates)["count"], 1)
+            self.assertAlmostEqual(float(candidates[0].path[:, 1].mean()), 120, delta=1)
+        self.assertEqual(engine.generator.calls, 1)
+        self.assertEqual(engine.fine_generator.calls, 1)
+        self.assertEqual(engine.fine_generator.shape, (210, 400, 3))
+        with self.assertRaises(ValueError):
+            engine.analyze(frame, Settings(ai_search="unknown"), roi)
+
     def test_independent_body_mask_does_not_merge_with_white_background(self):
         frame, region = capsule()
         baseline, _ = analyze(frame)
@@ -77,6 +105,57 @@ class MaskGeometryTests(unittest.TestCase):
 
 
 class AsyncTests(unittest.TestCase):
+    def test_fine_preset_shows_its_settings_and_normal_button_restores_search_density(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = headless_app(directory)
+            keys = ["brightness", "saturation", "min_area", "max_area", "min_aspect"]
+            app.params = {key: FakeValue() for key in keys}
+            app.appearance = FakeValue()
+            jobs = []
+            app.request_ai = lambda frame, position: jobs.append(app.settings)
+            app.start_ai_fine()
+            self.assertEqual(jobs[-1].ai_search, "fine")
+            self.assertEqual(app.params["min_area"].get(), "30")
+            self.assertEqual(app.params["max_area"].get(), "4000")
+            self.assertEqual(app.appearance.get(), "暗い蚕")
+            self.assertTrue(app.paused)
+            app.start_ai_once()
+            self.assertEqual(jobs[-1].ai_search, "standard")
+            self.assertEqual(jobs[-1].appearance, "light")
+            self.assertEqual(app.params["min_area"].get(), "100")
+            self.assertEqual(app.params["max_area"].get(), "100000")
+
+    def test_fine_candidates_are_logged_separately_without_publishing_measurements(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = headless_app(directory)
+            app.settings = Settings(ai_search="fine")
+            job = AIJob(app.frame.copy(), None, app.settings, None, (app.series, app.ai_generation))
+
+            class Finished:
+                def receive(self):
+                    return {"job": job, "error": None, "candidates": [], "device": "cpu", "seconds": 2}
+
+            app.ai_mode, app.ai_worker, app.paused = "single", Finished(), True
+            app.poll_ai()
+            self.assertEqual(read_rows(app.csv_path)[0]["method"], "sam_fine_candidate")
+            self.assertIn("AI詳細探索", app.result.get())
+            self.assertIn("体長の測定値なし", app.obs_path.read_text(encoding="utf-8-sig"))
+
+    def test_new_source_restores_the_settings_used_before_the_fine_preset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = headless_app(directory)
+            original = Settings(brightness=160, min_area=180)
+            app.settings = original
+            app.params = {key: FakeValue() for key in ["brightness", "saturation", "min_area", "max_area", "min_aspect"]}
+            app.appearance = FakeValue()
+            app.request_ai = lambda *_: None
+            app.start_ai_fine()
+            app.reset_source("new-image.png")
+            self.assertEqual(app.settings, original)
+            self.assertEqual(app.params["brightness"].get(), "160")
+            self.assertEqual(app.params["min_area"].get(), "180")
+            self.assertEqual(app.ai_mode, "off")
+
     def test_inference_does_not_block_submission_and_cannot_accumulate_jobs(self):
         release = threading.Event()
 
@@ -252,7 +331,8 @@ class PromptTests(unittest.TestCase):
             app = self.prepared_app(directory)
             app.finish_prompt()
             path = app.save_sample()
-            metadata = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+            with ZipFile(path) as archive:
+                metadata = json.loads(archive.read(path.stem+".json"))
             selection = metadata["assisted_selection"]
             self.assertEqual(selection["status"], "user_confirmed")
             self.assertEqual(selection["prompt_labels"], [1])

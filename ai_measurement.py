@@ -192,15 +192,20 @@ class LocalSegmenter:
         self.generator = SamAutomaticMaskGenerator(
             model, points_per_side=16, points_per_batch=8,
             pred_iou_thresh=.88, stability_score_thresh=.92, min_mask_region_area=250)
+        self.fine_generator = SamAutomaticMaskGenerator(
+            model, points_per_side=32, points_per_batch=8,
+            pred_iou_thresh=.88, stability_score_thresh=.92, min_mask_region_area=50)
         self.predictor = SamPredictor(model)
         self.prompt_image_key = None
 
     def analyze(self, frame, settings, roi=None):
+        settings.validate()
         view, offset = content_view(frame, roi)
         if view is None:
             return [], self.device
         rgb = cv2.cvtColor(view, cv2.COLOR_BGR2RGB)
-        regions = self.generator.generate(rgb)
+        generator = self.fine_generator if settings.ai_search == "fine" else self.generator
+        regions = generator.generate(rgb)
         return candidates_from_masks(view, regions, settings, offset), self.device
 
     def prompt(self, frame, settings, roi, points, labels):

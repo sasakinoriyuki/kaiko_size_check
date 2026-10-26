@@ -1,5 +1,6 @@
 """Windows 11 desktop prototype. No server, API key, or external upload."""
 import csv
+from dataclasses import replace
 from datetime import datetime
 import json
 import os
@@ -10,6 +11,7 @@ import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import uuid
+from zipfile import ZipFile, ZIP_DEFLATED
 
 import cv2
 import numpy as np
@@ -80,7 +82,7 @@ class Capture:
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("蚕CHANNEL 体長チェック — 試作版・クリック補助付き")
+        root.title("蚕CHANNEL 体長チェック — 試作版・詳細探索／ZIP対応")
         root.geometry("1380x930")
         root.minsize(1150, 800)
         self.capture = None
@@ -159,9 +161,10 @@ class App:
         ai = ttk.Frame(self.root, padding=(8, 5))
         ai.pack(fill="x")
         ttk.Button(ai, text="AIでこの画面を解析", command=self.start_ai_once).pack(side="left")
+        ttk.Button(ai, text="小さい蚕を細かく探索（試験）", command=self.start_ai_fine).pack(side="left", padx=5)
         ttk.Button(ai, text="AIで映像を繰り返し解析", command=self.start_ai_live).pack(side="left", padx=5)
         ttk.Button(ai, text="色と形の抽出に戻る", command=self.stop_ai).pack(side="left")
-        ttk.Label(ai, text="追加AIセットアップが必要です。解析中は前回の静止結果を表示します。").pack(side="left", padx=8)
+        ttk.Label(ai, text="追加AIセットアップが必要です。詳細探索はCPUで数分かかる場合があります。", wraplength=360).pack(side="left", padx=8)
         guided = ttk.Frame(self.root, padding=(8, 2))
         guided.pack(fill="x")
         ttk.Button(guided, text="蚕をクリックして拾い直す", command=lambda: self.begin("ai_point")).pack(side="left")
@@ -174,7 +177,7 @@ class App:
         ttk.Button(manual, text="手動測定を確定・保存", command=self.finish_manual).pack(side="left", padx=5)
         ttk.Button(manual, text="1点戻す", command=self.undo).pack(side="left")
         ttk.Label(manual, text="頭から尾まで体の中央をクリック → 確定。隠れた部分は測定できません。").pack(side="left", padx=10)
-        ttk.Button(manual, text="検証画像を保存", command=self.save_sample).pack(side="left", padx=5)
+        ttk.Button(manual, text="検証用ZIPを保存", command=self.save_sample).pack(side="left", padx=5)
 
         params = ttk.Frame(self.root, padding=8)
         params.pack(fill="x")
@@ -194,20 +197,24 @@ class App:
         ttk.Label(self.root, textvariable=self.status, padding=8, wraplength=1300).pack(fill="x")
         content = ttk.Frame(self.root, padding=8)
         content.pack(fill="both", expand=True)
+        content.columnconfigure(0, weight=1)
+        content.columnconfigure(1, weight=0, minsize=300)
+        content.rowconfigure(0, weight=1)
         self.canvas = tk.Canvas(content, width=960, height=540, bg="#15201d", highlightthickness=0)
-        self.canvas.pack(side="left", anchor="n", fill="both", expand=True)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
         self.canvas.bind("<Button-1>", self.click)
         self.canvas.bind("<Button-3>", self.click)
         self.canvas.bind("<Configure>", lambda event: self.render())
         side = ttk.Frame(content, width=300, padding=(12, 0))
-        side.pack(side="right", fill="y")
+        side.grid(row=0, column=1, sticky="ns")
+        side.pack_propagate(False)
         self.result = tk.StringVar()
-        ttk.Label(side, textvariable=self.result, font=("Yu Gothic UI", 13), justify="left").pack(anchor="w")
+        ttk.Label(side, textvariable=self.result, font=("Yu Gothic UI", 13), justify="left", wraplength=280).pack(anchor="w")
         self.items = tk.Listbox(side, width=32, height=8)
         self.items.pack(fill="x", pady=10)
         self.items.bind("<<ListboxSelect>>", self.select_prompt)
         ttk.Label(side, text="緑：未確認の候補線　橙：除外領域\n候補の個数は蚕の匹数ではありません。\n番号はこの画面内の仮番号です。", wraplength=280).pack(anchor="w")
-        ttk.Label(side, text="候補線の平均長（未確認・この起動内）").pack(anchor="w", pady=(16, 3))
+        ttk.Label(side, text="候補線の平均長（未確認・この起動内）", wraplength=280).pack(anchor="w", pady=(16, 3))
         self.chart = tk.Canvas(side, width=280, height=150, bg="white", highlightthickness=0)
         self.chart.pack()
         ttk.Label(side, text="蚕の認識精度は未確認です。\n葉・背景の誤検出も含みます。\n蚕の体長や成長の実測値としては使えません。", wraplength=280).pack(anchor="w", pady=6)
@@ -249,6 +256,8 @@ class App:
         self.paused = False
         self.ended = False
         self.ai_mode, self.ai_failed, self.ai_pending = "off", False, False
+        if self.settings.ai_search == "fine":
+            self.show_settings(getattr(self, "standard_settings", replace(self.settings, ai_search="standard")))
         self.new_series()
         self.items.delete(0, "end")
         self.result.set("映像待ち・基準未設定（px）")
@@ -464,7 +473,7 @@ class App:
             self.prompt_saved = True
             self.result.set(f"AI補助・全身を手動確認\n中心線長 {length:.1f} {unit}\nCSVに保存しました。\n自動候補の集計には含めません。")
             self.write_obs(f"蚕CHANNEL | AI補助・手動確認の静止値 {length:.1f} {unit}")
-            self.tell("CSVに保存しました。『検証画像を保存』を押すと、指定した点・選択した輪郭もJSONに残せます。")
+            self.tell("CSVに保存しました。『検証用ZIPを保存』で、画像・指定した点・選択した輪郭を1つのZIPに残せます。")
 
     def finish_manual(self):
         if self.mode != "manual" or len(self.points) < 2:
@@ -516,8 +525,8 @@ class App:
         stamp = datetime.now().astimezone()
         stem = f"sample_{stamp.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         directory = self.data / "samples"
-        image_path = directory / f"{stem}.png"
-        metadata_path = directory / f"{stem}.json"
+        archive_path = directory / f"{stem}.zip"
+        temporary_path = directory / f"{stem}.tmp"
         metadata = {
             "timestamp": stamp.isoformat(timespec="seconds"),
             "source": self.source, "video_seconds": self.position,
@@ -543,23 +552,25 @@ class App:
             ok, encoded = cv2.imencode(".png", cropped)
             if not ok:
                 raise ValueError("PNGの変換に失敗しました。")
-            image_path.write_bytes(encoded.tobytes())
-            metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+            with ZipFile(temporary_path, "w", compression=ZIP_DEFLATED) as archive:
+                archive.writestr(f"{stem}.png", encoded.tobytes())
+                archive.writestr(f"{stem}.json", json.dumps(metadata, ensure_ascii=False, indent=2))
+            os.replace(temporary_path, archive_path)
         except (OSError, ValueError, cv2.error) as exc:
-            for partial in (image_path, metadata_path):
-                try:
-                    partial.unlink(missing_ok=True)
-                except OSError:
-                    pass
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
             self.tell(f"検証画像の保存に失敗しました: {exc}")
             return None
-        self.tell(f"検証画像を保存しました: data/samples/{stem}.png（選択範囲・元の解像度）。外部送信はしていません。")
-        return image_path
+        self.tell(f"検証用ZIPを保存しました: data/samples/{stem}.zip（画像と設定入り）。『保存先を開く』→samples にあります。")
+        return archive_path
 
     def apply_settings(self):
         try:
             settings = Settings(**{k: (float(v.get()) if k == "min_aspect" else int(v.get())) for k, v in self.params.items()},
-                                appearance="dark" if self.appearance.get() == "暗い蚕" else "light")
+                                appearance="dark" if self.appearance.get() == "暗い蚕" else "light",
+                                ai_search=self.settings.ai_search)
             settings.validate()
         except ValueError as exc:
             messagebox.showerror("検出設定", str(exc))
@@ -587,10 +598,30 @@ class App:
         self.process()
         self.tell("一時停止中です。" if self.paused else "試験的な候補抽出中です。蚕の認識は未確認です。")
 
-    def start_ai_once(self):
+    def start_ai_fine(self):
         if self.frame is None:
             self.tell("先に画像または映像を開いてください。")
             return
+        # A visible preset for the shared first-instar image, not an age classifier.
+        if self.settings.ai_search != "fine":
+            self.standard_settings = self.settings
+        self.show_settings(Settings(appearance="dark", min_area=30, max_area=4000, ai_search="fine"))
+        self.start_ai_once(fine=True)
+
+    def show_settings(self, settings):
+        self.settings = settings
+        self.appearance.set("暗い蚕" if settings.appearance == "dark" else "明るい蚕")
+        for key, var in self.params.items():
+            var.set(str(getattr(settings, key)))
+
+    def start_ai_once(self, fine=False):
+        if self.frame is None:
+            self.tell("先に画像または映像を開いてください。")
+            return
+        if not fine and self.settings.ai_search == "fine":
+            self.show_settings(getattr(self, "standard_settings", replace(self.settings, ai_search="standard")))
+        else:
+            self.settings = replace(self.settings, ai_search="fine" if fine else "standard")
         self.paused = True
         if self.capture:
             self.capture.pause.set()
@@ -628,7 +659,8 @@ class App:
                     (self.series, self.ai_generation))
         if self.ai_worker.submit(job):
             self.ai_pending = False
-            self.tell("AI解析中です。CPUでは数十秒かかる場合があります。表示中の輪郭は前回の静止結果です。")
+            timing = "詳細探索中です。CPUでは数分かかる場合があります。" if self.settings.ai_search == "fine" else "AI解析中です。CPUでは数十秒かかる場合があります。"
+            self.tell(timing + "表示中の輪郭は前回の静止結果です。")
             self.write_obs("蚕CHANNEL | AI候補を解析中\n蚕の認識は未確認・体長の測定値なし")
 
     def poll_ai(self):
@@ -660,8 +692,10 @@ class App:
         self.frame, self.position = job.frame, job.position
         self.candidates, self.mask = result["candidates"], None
         self.show_mask.set(False)
-        prefix = f"AI静止結果（{result['device']}・{result['seconds']:.1f}秒）\n"
-        self.publish_candidates("sam_auto_candidate", prefix, self.ai_mode == "single")
+        fine = job.settings.ai_search == "fine"
+        name = "AI詳細探索・静止結果" if fine else "AI静止結果"
+        prefix = f"{name}（{result['device']}・{result['seconds']:.1f}秒）\n"
+        self.publish_candidates("sam_fine_candidate" if fine else "sam_auto_candidate", prefix, self.ai_mode == "single")
         self.tell(f"AI解析が完了しました（{result['seconds']:.1f}秒）。緑の線が蚕の全身をたどるか確認してください。部分的な体や誤検出も残ります。")
 
     def log(self, stats, method="auto_candidate", points=None):
