@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ja"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>蚕CHANNEL 輪郭案の確認</title>
+<style>
+body{font:16px system-ui,sans-serif;margin:0;background:#f3f5f1;color:#17251c}header,aside{padding:16px}header{background:#173e2e;color:white}h1{font-size:22px;margin:0 0 8px}p{margin:8px 0;line-height:1.6}main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:12px;padding:12px}button,select{font:inherit;padding:8px;margin:3px;border:1px solid #a3b4a8;border-radius:5px;background:white;color:#17251c}button:focus-visible,select:focus-visible{outline:3px solid #08a8e0}button:disabled{opacity:.45}#stage{background:#333;width:100%;height:68vh;min-height:340px;touch-action:none}aside{background:white;border-radius:8px}#objects{width:100%;height:190px}#status{min-height:28px;color:#215c43}.bar{padding:4px 12px}#summary{color:#d5eedc}.note{font-size:14px;color:#425c4d}input[type=file]{max-width:100%}@media(max-width:850px){main{grid-template-columns:1fr}#stage{height:55vh}}
+</style>
+<header><h1>蚕CHANNEL 輪郭案の確認</h1><div id="summary"></div><p>これは作成途中の輪郭案です。まだ学習には使っていません。画像や編集結果を外部へ送信しません。</p></header>
+<div class="bar"><label>画像 <select id="frames"></select></label><button id="fit">全体を見る</button><button id="focus">選択した輪郭を拡大</button><button id="zin">＋ 拡大</button><button id="zout">− 縮小</button></div>
+<main><section><svg id="stage" xmlns="http://www.w3.org/2000/svg" aria-label="画像と輪郭の確認画面"></svg><p class="note">橙：未確認の輪郭案／緑：確認済み／青：部分的・不明／灰色の点線：隠れや重なりを確認する領域。番号は画像内だけの番号です。</p></section>
+<aside><label for="objects">輪郭・領域</label><select id="objects" size="8"></select><p id="details"></p>
+<label>見え方 <select id="visibility"><option value="full">全身が見える</option><option value="partial">一部が隠れている</option><option value="uncertain">判断できない</option><option value="ignore_region">重なり等の除外領域</option></select></label>
+<p><button id="confirm">選択した輪郭を確認済みにする</button><button id="reset">この輪郭を最初に戻す</button></p>
+<p class="note">拡大すると輪郭上の点をドラッグして直せます。輪郭や見え方を変えると未確認に戻ります。隠れた体を想像でつながないでください。</p>
+<button id="save">確認結果のJSONを保存</button><p><label>保存したJSONから再開 <input id="load" type="file" accept=".json,application/json"></label></p><p class="note">編集は自動保存しません。閉じる前にJSONを保存してください。</p><p id="status" role="status"></p></aside></main>
+<script id="payload" type="application/json">__ANNOTATION_PAYLOAD__</script>
+<script>
+'use strict';
+const payload=JSON.parse(document.getElementById('payload').textContent);
+const original=structuredClone(payload.annotations);let data=structuredClone(original),fi=0,oi=0,box,drag=null,dirty=false;
+const $=id=>document.getElementById(id),ns='http://www.w3.org/2000/svg',svg=$('stage');
+const frame=()=>data.frames[fi],obj=()=>frame().objects[oi];
+function el(tag,attrs,parent=svg){const n=document.createElementNS(ns,tag);for(const[k,v]of Object.entries(attrs))n.setAttribute(k,v);parent.append(n);return n;}
+function eligible(o){return o.review_status==='human_confirmed'&&o.visibility==='full';}
+function summaries(){const objects=data.frames.flatMap(f=>f.objects),confirmed=objects.filter(o=>o.review_status==='human_confirmed').length;$('summary').textContent=`${data.frames.length}枚・輪郭案${objects.filter(o=>o.visibility!=='ignore_region').length}件・確認済み${confirmed}件（全身${objects.filter(eligible).length}件）`;
+ $('details').textContent=obj().note||'';}
+function objectList(){const old=oi;$('objects').replaceChildren();frame().objects.forEach((o,i)=>{const op=document.createElement('option');op.value=i;op.textContent=`${o.id}　${o.review_status==='human_confirmed'?'確認済み':'未確認'}${o.visibility==='full'?'':o.visibility==='ignore_region'?'／除外領域':'／部分・不明'}`;$('objects').append(op);});oi=Math.min(old,frame().objects.length-1);$('objects').value=oi;$('visibility').value=obj().visibility;summaries();}
+function fit(){box=[0,0,...frame().resolution];render();}
+function focus(){const p=obj().polygon,x=p.map(p=>p[0]),y=p.map(p=>p[1]),a=Math.max(0,Math.min(...x)-45),b=Math.max(0,Math.min(...y)-45);box=[a,b,Math.min(frame().resolution[0]-a,Math.max(...x)-a+45),Math.min(frame().resolution[1]-b,Math.max(...y)-b+45)];render();}
+function zoom(factor){let[x,y,w,h]=box;const nw=Math.min(frame().resolution[0],Math.max(40,w*factor)),nh=Math.min(frame().resolution[1],Math.max(40,h*factor));box=[Math.max(0,Math.min(frame().resolution[0]-nw,x+(w-nw)/2)),Math.max(0,Math.min(frame().resolution[1]-nh,y+(h-nh)/2)),nw,nh];render();}
+function selectObject(i){oi=i;objectList();render();}
+function render(){svg.replaceChildren();svg.setAttribute('viewBox',box.join(' '));el('image',{href:payload.images[frame().id],width:frame().resolution[0],height:frame().resolution[1]});
+ frame().objects.forEach((o,i)=>{const color=o.visibility==='ignore_region'?'#bbbbbb':o.visibility!=='full'?'#00bcff':o.review_status==='human_confirmed'?'#17dd74':'#ffa51e';const p=el('polygon',{points:o.polygon.map(p=>p.join(',')).join(' '),fill:color,'fill-opacity':i===oi?'.12':'.03',stroke:color,'stroke-width':i===oi?3:2,'vector-effect':'non-scaling-stroke','stroke-dasharray':o.visibility==='ignore_region'?'6 4':'none'});p.addEventListener('click',()=>selectObject(i));const label=el('text',{x:o.polygon[0][0],y:o.polygon[0][1]-5,fill:color,'font-size':Math.max(12,box[2]/70),'paint-order':'stroke',stroke:'#111','stroke-width':1});label.textContent=o.id;
+ });
+ if(box[2]<frame().resolution[0]*.8)obj().polygon.forEach((p,i)=>{const c=el('circle',{cx:p[0],cy:p[1],r:Math.max(2,box[2]/110),fill:'white',stroke:'#004b7b','stroke-width':1});c.style.cursor='move';c.addEventListener('pointerdown',e=>{e.preventDefault();drag=i;dirty=true;obj().review_status='draft';svg.setPointerCapture(e.pointerId);});});summaries();}
+svg.addEventListener('pointermove',e=>{if(drag===null)return;const pt=new DOMPoint(e.clientX,e.clientY).matrixTransform(svg.getScreenCTM().inverse());obj().polygon[drag]=[Math.round(Math.max(0,Math.min(frame().resolution[0]-1,pt.x))),Math.round(Math.max(0,Math.min(frame().resolution[1]-1,pt.y)))];render();});
+function endDrag(){if(drag!==null){drag=null;objectList();render();}}
+svg.addEventListener('pointerup',endDrag);svg.addEventListener('pointercancel',endDrag);svg.addEventListener('lostpointercapture',endDrag);
+data.frames.forEach((f,i)=>{const op=document.createElement('option');op.value=i;op.textContent=`${f.instar}齢：${f.display_name}`;$('frames').append(op);});
+$('frames').addEventListener('change',()=>{fi=+$('frames').value;oi=0;objectList();fit();});$('objects').addEventListener('change',()=>{selectObject(+$('objects').value);focus();});
+$('fit').onclick=fit;$('focus').onclick=focus;$('zin').onclick=()=>zoom(.7);$('zout').onclick=()=>zoom(1.4);
+$('visibility').onchange=()=>{obj().visibility=$('visibility').value;obj().review_status='draft';dirty=true;objectList();render();};
+$('confirm').onclick=()=>{obj().review_status='human_confirmed';dirty=true;objectList();render();$('status').textContent='選択した輪郭だけを確認済みにしました。保存ボタンでJSONを書き出してください。';};
+$('reset').onclick=()=>{frame().objects[oi]=structuredClone(original.frames[fi].objects[oi]);dirty=true;objectList();render();};
+$('save').onclick=()=>{const result=structuredClone(data);result.frames.forEach(f=>f.objects.forEach(o=>o.eligible_for_length_training=eligible(o)));result.saved_at=new Date().toISOString();const a=document.createElement('a'),url=URL.createObjectURL(new Blob([JSON.stringify(result,null,2)],{type:'application/json'}));a.href=url;a.download='kaiko_annotation_review.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);dirty=false;$('status').textContent='JSONの保存を開始しました。ブラウザのダウンロード先を確認してください。';};
+function validateImport(next){if(next.schema_version!==1||!Array.isArray(next.frames)||next.frames.length!==original.frames.length)throw Error('別のデータです');for(let i=0;i<original.frames.length;i++){const a=original.frames[i],b=next.frames[i];if(b.id!==a.id||b.sha256!==a.sha256||JSON.stringify(b.resolution)!==JSON.stringify(a.resolution)||b.unlabelled_pixels!=='ignore'||b.objects.length!==a.objects.length)throw Error('画像が一致しません');for(let j=0;j<a.objects.length;j++){const o=b.objects[j];if(o.id!==a.objects[j].id||!['full','partial','uncertain','ignore_region'].includes(o.visibility)||!['draft','human_confirmed'].includes(o.review_status)||!Array.isArray(o.polygon)||o.polygon.length<3||o.polygon.some(p=>!Array.isArray(p)||p.length!==2||!p.every(Number.isFinite)||p[0]<0||p[1]<0||p[0]>=a.resolution[0]||p[1]>=a.resolution[1]))throw Error('輪郭データが不正です');}}return next;}
+$('load').onchange=async()=>{try{const file=$('load').files[0];if(!file)return;if(file.size>2*1024*1024)throw Error('JSONが大きすぎます');const next=validateImport(JSON.parse(await file.text()));if(dirty&&!window.confirm('未保存の変更を置き換えますか？'))return;data=next;dirty=false;objectList();fit();$('status').textContent='保存した確認結果を読み込みました。';}catch(e){$('status').textContent='読み込めませんでした：'+e.message;}};
+window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});objectList();fit();
+</script></html>
