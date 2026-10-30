@@ -82,7 +82,7 @@ class Capture:
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("蚕CHANNEL 体長チェック — 試作版・詳細探索／ZIP対応")
+        root.title("蚕CHANNEL 体長チェック — 自作モデル試験版")
         root.geometry("1380x930")
         root.minsize(1150, 800)
         self.capture = None
@@ -158,13 +158,22 @@ class App:
         ttk.Combobox(layouts, textvariable=self.appearance, values=["明るい蚕", "暗い蚕"],
                      state="readonly", width=12).pack(side="left")
         ttk.Label(layouts, text="齢によらず選択し、検出設定を適用してください。").pack(side="left", padx=8)
+        engines = ttk.Frame(self.root, padding=(8, 2))
+        engines.pack(fill="x")
+        ttk.Label(engines, text="解析方式").pack(side="left")
+        self.ai_engine_choice = tk.StringVar(value="自作モデル（試験）")
+        engine_menu = ttk.Combobox(engines, textvariable=self.ai_engine_choice,
+                                  values=["自作モデル（試験）", "MobileSAM（従来）"], state="readonly", width=24)
+        engine_menu.pack(side="left", padx=5)
+        engine_menu.bind("<<ComboboxSelected>>", self.change_ai_engine)
+        ttk.Label(engines, text="自作モデルは明るい体・暗い体を一緒に解析します。結果は未確認の候補です。").pack(side="left", padx=8)
         ai = ttk.Frame(self.root, padding=(8, 5))
         ai.pack(fill="x")
         ttk.Button(ai, text="AIでこの画面を解析", command=self.start_ai_once).pack(side="left")
         ttk.Button(ai, text="小さい蚕を細かく探索（試験）", command=self.start_ai_fine).pack(side="left", padx=5)
         ttk.Button(ai, text="AIで映像を繰り返し解析", command=self.start_ai_live).pack(side="left", padx=5)
         ttk.Button(ai, text="色と形の抽出に戻る", command=self.stop_ai).pack(side="left")
-        ttk.Label(ai, text="追加AIセットアップが必要です。詳細探索はCPUで数分かかる場合があります。", wraplength=360).pack(side="left", padx=8)
+        ttk.Label(ai, text="自作モデルは配布された重みを使います。詳細探索・クリック補助は従来モデル用です。", wraplength=300).pack(side="left", padx=8)
         guided = ttk.Frame(self.root, padding=(8, 2))
         guided.pack(fill="x")
         ttk.Button(guided, text="蚕をクリックして拾い直す", command=lambda: self.begin("ai_point")).pack(side="left")
@@ -532,7 +541,7 @@ class App:
             "source": self.source, "video_seconds": self.position,
             "source_resolution": [w, h], "crop_xyxy": [x0, y0, x1, y1],
             "pixels_per_mm": self.ppmm, "settings": self.settings.dictionary(),
-            "candidate_method": "mobile_sam" if self.mode == "ai_point" or getattr(self, "ai_mode", "off") != "off" else "threshold",
+            "candidate_method": ("mobile_sam" if self.mode == "ai_point" else self.selected_ai_engine()) if self.mode == "ai_point" or getattr(self, "ai_mode", "off") != "off" else "threshold",
             "candidate_status": "unverified",
             "calibration_points_source_xy": self.calibration_points,
             "manual_points_source_xy": self.points if self.mode == "manual" else [],
@@ -599,6 +608,9 @@ class App:
         self.tell("一時停止中です。" if self.paused else "試験的な候補抽出中です。蚕の認識は未確認です。")
 
     def start_ai_fine(self):
+        if self.selected_ai_engine() == "scratch":
+            self.tell("自作モデルは『AIでこの画面を解析』を使ってください。詳細探索とクリック補助は従来モデル用です。")
+            return
         if self.frame is None:
             self.tell("先に画像または映像を開いてください。")
             return
@@ -656,10 +668,10 @@ class App:
             self.ai_pending = True
             return
         job = AIJob(frame.copy(), position, self.settings, self.roi,
-                    (self.series, self.ai_generation))
+                    (self.series, self.ai_generation), backend=self.selected_ai_engine())
         if self.ai_worker.submit(job):
             self.ai_pending = False
-            timing = "詳細探索中です。CPUでは数分かかる場合があります。" if self.settings.ai_search == "fine" else "AI解析中です。CPUでは数十秒かかる場合があります。"
+            timing = "自作モデルで解析中です。" if job.backend == "scratch" else ("詳細探索中です。CPUでは数分かかる場合があります。" if self.settings.ai_search == "fine" else "AI解析中です。CPUでは数十秒かかる場合があります。")
             self.tell(timing + "表示中の輪郭は前回の静止結果です。")
             self.write_obs("蚕CHANNEL | AI候補を解析中\n蚕の認識は未確認・体長の測定値なし")
 
@@ -693,10 +705,29 @@ class App:
         self.candidates, self.mask = result["candidates"], None
         self.show_mask.set(False)
         fine = job.settings.ai_search == "fine"
-        name = "AI詳細探索・静止結果" if fine else "AI静止結果"
+        name = "自作モデル・静止結果" if job.backend == "scratch" else ("AI詳細探索・静止結果" if fine else "AI静止結果")
         prefix = f"{name}（{result['device']}・{result['seconds']:.1f}秒）\n"
-        self.publish_candidates("sam_fine_candidate" if fine else "sam_auto_candidate", prefix, self.ai_mode == "single")
+        method = "scratch_auto_candidate" if job.backend == "scratch" else ("sam_fine_candidate" if fine else "sam_auto_candidate")
+        self.publish_candidates(method, prefix, self.ai_mode == "single")
         self.tell(f"AI解析が完了しました（{result['seconds']:.1f}秒）。緑の線が蚕の全身をたどるか確認してください。部分的な体や誤検出も残ります。")
+
+    def selected_ai_engine(self):
+        choice = getattr(self, "ai_engine_choice", None)
+        return "scratch" if choice is not None and choice.get().startswith("自作") else "mobile_sam"
+
+    def change_ai_engine(self, _event=None):
+        self.ai_mode, self.ai_failed, self.ai_pending = "off", False, False
+        self.paused = True
+        if self.capture:
+            self.capture.pause.set()
+        self.mode, self.points, self.candidates, self.mask = "auto", [], [], None
+        self.new_series()
+        self.items.delete(0, "end")
+        self.show_mask.set(False)
+        self.result.set("解析方式を変更しました。\nAI解析はまだ実行していません。\n体長の測定値なし")
+        self.render()
+        self.write_obs("蚕CHANNEL | 解析方式を変更\n体長の測定値なし")
+        self.tell("解析方式を変更しました。画像・範囲を確認してAI解析ボタンを押してください。")
 
     def log(self, stats, method="auto_candidate", points=None):
         row = {

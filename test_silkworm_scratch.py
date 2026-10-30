@@ -80,6 +80,40 @@ class ScratchTrainingTest(unittest.TestCase):
         self.assertEqual(result.shape, (91, 137))
         np.testing.assert_array_equal(result, np.full((91, 137), .5))
 
+    def test_context_model_tiles_align_with_single_tile_prediction(self):
+        import torch
+        torch.manual_seed(9)
+        model = create_model('kaiko_context_unet_v2').eval()
+        image = np.random.default_rng(4).integers(0, 256, (91, 137, 3), dtype=np.uint8)
+        tiled = predict(model, image, tile=64, halo=64)
+        single = predict(model, image, tile=256, halo=64)
+        np.testing.assert_allclose(tiled, single, atol=1e-5)
+
+    def test_checkpoints_resume_own_weights_and_preserve_architecture(self):
+        import torch
+        from silkworm_scratch import load_model, train
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            Image.new('RGB', (160, 160), 'green').save(root/'image.png')
+            labels = np.full((160, 160), 255, np.uint8)
+            labels[40:60, 40:60] = 1; labels[90:110, 90:110] = 0
+            Image.fromarray(labels).save(root/'labels.png')
+            entry = {'id': 'test', 'image': 'image.png', 'labels': 'labels.png', 'roi': [0, 0, 160, 160],
+                     'image_sha256': hashlib.sha256((root/'image.png').read_bytes()).hexdigest(),
+                     'labels_sha256': hashlib.sha256((root/'labels.png').read_bytes()).hexdigest()}
+            (root/'data.json').write_text(json.dumps({'ignore_value': 255, 'frames': [entry]}))
+            first = root/'first.pt'; second = root/'second.pt'
+            train(root/'data.json', first, steps=1, device='cpu', architecture='kaiko_context_unet_v2', batch_size=2)
+            meta = train(root/'data.json', second, steps=1, device='cpu', architecture='kaiko_context_unet_v2', batch_size=2, resume=first)
+            self.assertEqual(meta['parent_checkpoint_sha256'], hashlib.sha256(first.read_bytes()).hexdigest())
+            self.assertEqual(meta['initialization'], 'checkpoint_resume')
+            model, _ = load_model(second)
+            with torch.inference_mode():
+                self.assertEqual(tuple(model(torch.zeros(1, 3, 91, 137)).shape), (1, 1, 91, 137))
+            labels[0, 0] = 0; Image.fromarray(labels).save(root/'labels.png')
+            with self.assertRaisesRegex(ValueError, 'Label hash'):
+                load_dataset(root/'data.json')
+
 
 if __name__ == '__main__':
     unittest.main()

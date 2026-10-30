@@ -107,7 +107,22 @@ def _extend(point, direction, mask):
 
 def centerline(mask, prune_short_spurs=False):
     """Accept only a single open, nonbranching skeleton; never infer a hidden body."""
-    graph = _graph(skeletonize(mask > 0))
+    skeleton = skeletonize(mask > 0)
+    if not prune_short_spurs:
+        # Reject clearly branched regions in arrays before constructing a Python
+        # graph. This uses the same diagonal-triangle rule as _graph.
+        p = np.pad(skeleton, 1)
+        up, down = p[:-2, 1:-1], p[2:, 1:-1]
+        left, right = p[1:-1, :-2], p[1:-1, 2:]
+        degree = up.astype(np.uint8)+down+left+right
+        for diagonal, vertical, horizontal in ((p[:-2, :-2], up, left),
+                                               (p[:-2, 2:], up, right),
+                                               (p[2:, :-2], down, left),
+                                               (p[2:, 2:], down, right)):
+            degree += diagonal & ~vertical & ~horizontal
+        if np.count_nonzero(skeleton & (degree == 1)) != 2 or np.any(skeleton & (degree > 2)):
+            return None, "branch_or_loop"
+    graph = _graph(skeleton)
     if prune_short_spurs:
         # Only for a user-reviewed mask: trim short skeleton twigs caused by its
         # ragged outline. Keep long branches and loops rejected, without joining gaps.

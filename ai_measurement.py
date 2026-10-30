@@ -232,13 +232,16 @@ class AIJob:
     token: object
     prompt_points: tuple | None = None
     prompt_labels: tuple | None = None
+    backend: str = "mobile_sam"
 
 
 class AIWorker:
     """One job at a time. Never run Torch or touch Tk widgets on the UI thread."""
-    def __init__(self, factory=LocalSegmenter):
+    def __init__(self, factory=LocalSegmenter, scratch_factory=None):
         self.factory = factory
         self.engine = None
+        self.scratch_factory = scratch_factory
+        self.scratch_engine = None
         self.jobs = queue.Queue(maxsize=1)
         self.results = queue.Queue(maxsize=1)
         self.stopped = threading.Event()
@@ -269,12 +272,25 @@ class AIWorker:
                 continue
             start = time.monotonic()
             try:
-                if self.engine is None:
-                    self.engine = self.factory()
-                if job.prompt_points is None:
-                    candidates, device = self.engine.analyze(job.frame, job.settings, job.roi)
+                if job.backend not in {"mobile_sam", "scratch"}:
+                    raise ValueError("不明な解析方式です。")
+                if job.backend == "scratch":
+                    if job.prompt_points is not None:
+                        raise ValueError("自作モデルは点の指定による解析には対応していません。")
+                    if self.scratch_engine is None:
+                        if self.scratch_factory is None:
+                            from scratch_measurement import LocalScratchSegmenter
+                            self.scratch_factory = LocalScratchSegmenter
+                        self.scratch_engine = self.scratch_factory()
+                    engine = self.scratch_engine
                 else:
-                    candidates, device = self.engine.prompt(
+                    if self.engine is None:
+                        self.engine = self.factory()
+                    engine = self.engine
+                if job.prompt_points is None:
+                    candidates, device = engine.analyze(job.frame, job.settings, job.roi)
+                else:
+                    candidates, device = engine.prompt(
                         job.frame, job.settings, job.roi, job.prompt_points, job.prompt_labels)
                 result = {"job": job, "candidates": candidates, "device": device,
                           "seconds": time.monotonic()-start, "error": None}
