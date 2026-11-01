@@ -5,7 +5,9 @@ Uses existing yt-dlp/ffmpeg commands. Never downloads a whole channel or a model
 import importlib.util
 import json
 import math
+import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -16,44 +18,102 @@ import cv2
 import numpy as np
 
 BASE = Path(__file__).resolve().parent
+IS_WINDOWS = sys.platform == 'win32'
 
 
-def find_tool(name):
+def _command_options():
+    return {'shell': False, **({'creationflags': getattr(subprocess, 'CREATE_NO_WINDOW', 0)} if IS_WINDOWS else {})}
+
+
+def _local_candidates(name):
+    candidates = []
     located = shutil.which(name)
     if located:
-        return [located]
+        candidates.append([located])
     for directory in [BASE, BASE / "tools", Path(sys.executable).parent]:
         for suffix in [".exe", ""]:
             candidate = directory / (name + suffix)
             if candidate.is_file():
-                return [str(candidate)]
-    if name == "yt-dlp" and importlib.util.find_spec("yt_dlp") is not None:
-        return [sys.executable, "-m", "yt_dlp"]
+                candidates.append([str(candidate)])
+    if IS_WINDOWS:
+        local = os.environ.get('LOCALAPPDATA')
+        if local:
+            winget = Path(local)/'Microsoft/WinGet'
+            link = winget/'Links'/(name+'.exe')
+            if link.is_file():
+                candidates.append([str(link)])
+            if name == 'ffmpeg':
+                for pattern in ['Gyan.FFmpeg*/ffmpeg*/bin/ffmpeg.exe', 'Gyan.FFmpeg*/bin/ffmpeg.exe']:
+                    candidates.extend([[str(p)] for p in (winget/'Packages').glob(pattern) if p.is_file()])
+        if name == 'deno':
+            path = Path.home()/'.deno/bin/deno.exe'
+            if path.is_file():
+                candidates.append([str(path)])
+    return list({tuple(c): c for c in candidates}.values())
+
+
+def find_tool(name, runner=None):
+    runner = runner or subprocess.run
+    candidates = _local_candidates(name)
+    if name == 'yt-dlp':
+        if importlib.util.find_spec('yt_dlp') is not None:
+            candidates.insert(0, [sys.executable, '-m', 'yt_dlp'])
+        launcher = shutil.which('py') if IS_WINDOWS else None
+        if launcher:
+            candidates.insert(0, [launcher, '-m', 'yt_dlp'])
+        working = []
+        for command in candidates:
+            try:
+                result = runner([*command, '--version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=5, check=False, **_command_options())
+                if result.returncode:
+                    continue
+                version = re.search(r'\b(\d{4})\.(\d{1,2})\.(\d{1,2})(?:\.(\d+))?', result.stdout.decode('utf-8', errors='replace'))
+                key = tuple(int(v or 0) for v in version.groups()) if version else (0, 0, 0, 0)
+                working.append((key, command))
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+        if working:
+            return max(working, key=lambda c: c[0])[1]
+    elif candidates:
+        return candidates[0]
     raise RuntimeError(f"{name} が見つかりません。導入済みのコマンドをPATHに追加するか、このアプリのフォルダに置いてください。")
 
 
 def _run(command, runner, timeout):
+    tool = 'yt-dlp' if 'yt_dlp' in command or 'yt-dlp' in Path(command[0]).name else 'ffmpeg'
     try:
-        result = runner(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=False)
+        result = runner(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=False, **_command_options())
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("取得処理が時間切れになりました。通信状態を確認して再実行してください。") from exc
+        raise RuntimeError(f"{tool} の処理が時間切れになりました。通信状態を確認して再実行してください。") from exc
+    except OSError as exc:
+        raise RuntimeError(f'{tool} を起動できませんでした。コマンドの導入先を確認してください。') from exc
     if result.returncode:
-        # Do not put signed media URLs or the entire metadata response into a GUI log.
-        raise RuntimeError("yt-dlp または ffmpeg の処理が失敗しました。コマンドが最新版か、公開された完了済みの動画か確認してください。")
+        detail = (result.stderr or b'').decode('utf-8', errors='replace')
+        detail = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', detail)
+        detail = re.sub(r'https?://[^\s<>\"\x27]+', '[URL非表示]', detail)
+        detail = re.sub(r'(?im)\b(cookie|authorization)\s*[:=][^\r\n]*', r'\1=[非表示]', detail)
+        detail = re.sub(r'(?i)\b(token|signature|cookie|authorization|api[_-]?key)\s*[:=]\s*\S+', r'\1=[非表示]', detail)
+        detail = ''.join(c for c in detail if c.isprintable() or c in '\n\t').strip()[-1800:]
+        raise RuntimeError(f'{tool} の処理が失敗しました（終了コード {result.returncode}）。\n'+(detail or '詳細が返されませんでした。コマンドの導入と動画の公開状態を確認してください。'))
     return result.stdout
 
 
 def youtube_samples(url, count=5, cancelled=None, runner=subprocess.run, yt_command=None, ffmpeg_command=None):
     parsed = urlparse(url)
     if parsed.scheme not in {"https", "http"} or parsed.hostname not in {
-            "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}:
+            "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"} or parsed.username or parsed.password:
         raise ValueError("YouTubeの動画URLを1本入力してください。")
     if not 1 <= count <= 20:
         raise ValueError("抽出枚数は1〜20です。")
-    yt = yt_command or find_tool("yt-dlp")
+    yt = yt_command or find_tool("yt-dlp", runner=runner)
     ffmpeg = ffmpeg_command or find_tool("ffmpeg")
     common = ["--ignore-config", "--no-playlist", "--no-warnings", "--no-progress",
               "--socket-timeout", "20", "--retries", "2", "--fragment-retries", "2"]
+    if IS_WINDOWS:
+        deno = _local_candidates('deno')
+        if deno:
+            common += ['--js-runtimes', 'deno:'+deno[0][0]]
     payload = _run([*yt, *common, "--skip-download", "--dump-single-json", url], runner, 180)
     try:
         info = json.loads(payload)

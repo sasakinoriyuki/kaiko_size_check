@@ -294,6 +294,10 @@ class AIWorker:
                         job.frame, job.settings, job.roi, job.prompt_points, job.prompt_labels)
                 result = {"job": job, "candidates": candidates, "device": device,
                           "seconds": time.monotonic()-start, "error": None}
+                if job.backend == "scratch":
+                    result["model_version"] = getattr(engine, "metadata", {}).get("model_version")
+                    result["inference_threshold"] = getattr(engine, "metadata", {}).get("inference_threshold", .5)
+                    result["model_sha256"] = getattr(engine, "model_sha256", None)
             except Exception as exc:
                 result = {"job": job, "error": str(exc) or type(exc).__name__}
             if not self.stopped.is_set():

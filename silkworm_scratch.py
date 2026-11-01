@@ -135,7 +135,7 @@ def sample_batch(frames, rng, count=4, size=128):
 
 
 def train(dataset, output, steps=1000, device='auto', seed=41,
-          architecture='kaiko_small_unet_v1', patch_size=128, batch_size=4, resume=None):
+          architecture='kaiko_small_unet_v1', patch_size=128, batch_size=4, resume=None, model_version=None):
     import torch
     if steps < 1:
         raise ValueError('Steps must be positive')
@@ -175,6 +175,7 @@ def train(dataset, output, steps=1000, device='auto', seed=41,
             print(json.dumps(row), flush=True)
             recent = []
     metadata = {'schema_version': 1, 'architecture': architecture,
+                'model_version': model_version,
                 'initialization': 'checkpoint_resume' if resume else 'random_no_pretrained_weights', 'seed': seed,
                 'parent_checkpoint_sha256': hashlib.sha256(Path(resume).read_bytes()).hexdigest() if resume else None,
                 'training_steps': steps, 'training_images': len(frames), 'device': device,
@@ -240,6 +241,8 @@ if __name__ == '__main__':
     parser.add_argument('--patch-size', type=int, default=128)
     parser.add_argument('--batch-size', type=int, default=4)
     parser.add_argument('--resume', help='Continue training from a supported checkpoint')
+    parser.add_argument('--model-version', help='Display label for a packaged experimental model')
     args = parser.parse_args()
     train(args.dataset, args.output, args.steps, args.device,
-          architecture=args.architecture, patch_size=args.patch_size, batch_size=args.batch_size, resume=args.resume)
+          architecture=args.architecture, patch_size=args.patch_size, batch_size=args.batch_size,
+          resume=args.resume, model_version=args.model_version)

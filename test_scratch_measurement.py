@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+import json
 
 import cv2
 import numpy as np
@@ -63,6 +64,7 @@ class ScratchApplicationTests(unittest.TestCase):
 
     def test_scratch_job_does_not_initialize_pretrained_engine(self):
         class Engine:
+            metadata = {'model_version': 'v5'}
             def analyze(self, *_):
                 return [], 'scratch-fake'
 
@@ -76,6 +78,7 @@ class ScratchApplicationTests(unittest.TestCase):
             result = worker.results.get(timeout=3)
             self.assertIsNone(result['error'])
             self.assertEqual(result['device'], 'scratch-fake')
+            self.assertEqual(result['model_version'], 'v5')
             self.assertIsNone(worker.engine)
         finally:
             worker.close()
@@ -104,9 +107,14 @@ class ScratchApplicationTests(unittest.TestCase):
             job = AIJob(app.frame.copy(), None, app.settings, None, (app.series, app.ai_generation), backend='scratch')
             class Finished:
                 def receive(self):
-                    return {'job': job, 'error': None, 'candidates': [], 'device': 'cpu', 'seconds': 1}
+                    return {'job': job, 'error': None, 'candidates': [], 'device': 'cpu', 'seconds': 1,
+                            'model_version': 'v5', 'inference_threshold': .75, 'model_sha256': 'a'*64}
             app.ai_mode, app.ai_worker, app.paused = 'single', Finished(), True
             app.poll_ai()
             self.assertIn('自作モデル', app.result.get())
+            self.assertIn('v5', app.result.get())
             self.assertEqual(read_rows(app.csv_path)[0]['method'], 'scratch_auto_candidate')
+            logged = json.loads(read_rows(app.csv_path)[0]['settings'])
+            self.assertEqual(logged['inference_threshold'], .75)
+            self.assertEqual(logged['model_sha256'], 'a'*64)
             self.assertIn('体長の測定値なし', app.obs_path.read_text(encoding='utf-8-sig'))

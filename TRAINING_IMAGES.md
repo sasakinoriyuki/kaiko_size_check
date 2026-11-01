@@ -28,6 +28,8 @@
 
 yt-dlpやffmpegの取得処理が失敗した場合、動画全体のダウンロードへ自動で切り替えません。コマンドの更新や、公開された再生可能なアーカイブかを確認します。この開発環境からはYouTubeへの接続を検証できないため、実際の取得はWindows PCでの確認が必要です。
 
+複数のyt-dlpが入っている場合は、現在のPython・WindowsのPythonランチャー・PATH上のコマンド等でバージョンを確認し、新しいものを選びます。ffmpegはWindowsのWinGet導入先からも探します。エラーでは処理したツール名と詳細を表示し、「エラー詳細をコピー」で全文を取得できます。署名付きURLや認証情報は詳細から伏せ、動画のメタデータ全体は表示しません。
+
 区間指定は [yt-dlp公式のdownload-sections](https://github.com/yt-dlp/yt-dlp#download-options) を使います。ffmpegが必要です。
 
 ## すでにMP4や画像がある場合

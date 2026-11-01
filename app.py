@@ -122,6 +122,7 @@ class App:
         self.ai_generation = getattr(self, "ai_generation", 0) + 1
         self.history = []
         self.last_log = -1e20
+        self.last_model_info = {}
         self.prompt_labels = []
         self.prompt_candidates = []
         self.prompt_selected = None
@@ -426,6 +427,7 @@ class App:
             self.result.set("AI補助を実行できませんでした。\n上の案内を確認してください。")
             return
         self.frame, self.position = job.frame, job.position
+        self.last_model_info = {}
         self.prompt_candidates = result["candidates"]
         self.items.delete(0, "end")
         for i, c in enumerate(self.prompt_candidates):
@@ -543,6 +545,7 @@ class App:
             "pixels_per_mm": self.ppmm, "settings": self.settings.dictionary(),
             "candidate_method": ("mobile_sam" if self.mode == "ai_point" else self.selected_ai_engine()) if self.mode == "ai_point" or getattr(self, "ai_mode", "off") != "off" else "threshold",
             "candidate_status": "unverified",
+            "model_info": getattr(self, 'last_model_info', {}) or None,
             "calibration_points_source_xy": self.calibration_points,
             "manual_points_source_xy": self.points if self.mode == "manual" else [],
             "note": "Source pixels without overlays. Detection candidates are not ground-truth labels.",
@@ -702,10 +705,13 @@ class App:
             return
         # Draw masks only on the exact frame sent to the worker.
         self.frame, self.position = job.frame, job.position
+        self.last_model_info = ({key: result.get(key) for key in ('model_version', 'inference_threshold', 'model_sha256')
+                                 if result.get(key) is not None} if job.backend == 'scratch' else {})
         self.candidates, self.mask = result["candidates"], None
         self.show_mask.set(False)
         fine = job.settings.ai_search == "fine"
-        name = "自作モデル・静止結果" if job.backend == "scratch" else ("AI詳細探索・静止結果" if fine else "AI静止結果")
+        version = result.get("model_version")
+        name = (f"自作モデル {version}・静止結果" if version else "自作モデル・静止結果") if job.backend == "scratch" else ("AI詳細探索・静止結果" if fine else "AI静止結果")
         prefix = f"{name}（{result['device']}・{result['seconds']:.1f}秒）\n"
         method = "scratch_auto_candidate" if job.backend == "scratch" else ("sam_fine_candidate" if fine else "sam_auto_candidate")
         self.publish_candidates(method, prefix, self.ai_mode == "single")
@@ -738,7 +744,8 @@ class App:
             "min": stats["min"], "max": stats["max"],
             "lengths": json.dumps(stats["lengths"]), "pixels_per_mm": self.ppmm,
             "resolution": f"{self.frame.shape[1]}x{self.frame.shape[0]}",
-            "roi": json.dumps(self.roi), "settings": json.dumps(self.settings.dictionary()),
+            "roi": json.dumps(self.roi), "settings": json.dumps({**self.settings.dictionary(),
+                                                                  **(getattr(self, 'last_model_info', {}) if method == 'scratch_auto_candidate' else {})}),
             "calibration_points": json.dumps(self.calibration_points),
             "manual_points": json.dumps(points),
         }

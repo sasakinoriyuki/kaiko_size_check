@@ -147,10 +147,11 @@ class PreparationWindow:
         self.messages = queue.SimpleQueue()
         self.cancelled = threading.Event()
         self.busy = False
+        self.last_error = ''
         self.output = BASE / "data/training_exports"
         root.title("蚕CHANNEL 学習用画像の準備")
-        root.geometry("800x420")
-        root.minsize(680, 380)
+        root.geometry("800x470")
+        root.minsize(680, 420)
         panel = ttk.Frame(root, padding=16)
         panel.pack(fill="both", expand=True)
         ttk.Label(panel, text="同じ齢の画像・録画を選びます。画像を切り抜いたり、縮小したりせずにZIPへ保存します。",
@@ -172,6 +173,7 @@ class PreparationWindow:
         self.image_button.pack(side="left", padx=8)
         self.youtube_button = ttk.Button(buttons, text="YouTubeの録画URL", command=lambda: self.choose("youtube"))
         self.youtube_button.pack(side="left")
+        ttk.Button(buttons, text="エラー詳細をコピー", command=self.copy_error).pack(side="left", padx=8)
         self.selection = tk.StringVar(value="ファイルを選んでください。元のファイルは変更しません。")
         ttk.Label(panel, textvariable=self.selection, wraplength=690).pack(anchor="w", pady=10)
         self.make_button = ttk.Button(panel, text="学習用の画像ZIPを作る", command=self.start)
@@ -213,6 +215,7 @@ class PreparationWindow:
             messagebox.showerror("設定", "齢は1〜5、枚数・選択画像は1〜20にしてください。")
             return
         self.busy = True
+        self.last_error = ''
         for button in [self.video_button, self.image_button, self.youtube_button, self.make_button]:
             button.configure(state="disabled")
         self.status.set("画像を準備しています。長い録画では時間がかかる場合があります。")
@@ -252,8 +255,17 @@ class PreparationWindow:
                 if kind == "done":
                     self.status.set(f"ZIPを {len(value)} 個保存しました。「出力フォルダを開く」から確認できます。別の齢は齢を選び直して準備します。")
                 else:
-                    self.status.set("準備できませんでした: " + value)
+                    self.last_error = str(value)
+                    self.status.set("準備できませんでした: " + str(value)[:220] + '\n全文は「エラー詳細をコピー」で取得できます。')
         self.root.after(100, self.poll)
+
+    def copy_error(self):
+        if not self.last_error:
+            messagebox.showinfo('エラー詳細', 'コピーするエラーはありません。')
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.last_error)
+        self.status.set('エラー詳細をコピーしました。このチャットに貼り付けられます。')
 
     def open_output(self):
         self.output.mkdir(parents=True, exist_ok=True)

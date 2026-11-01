@@ -64,3 +64,66 @@ class UpdateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             update.install_update(self.source, self.target)
         self.assertEqual((self.target/'data/measurements.csv').read_bytes(), b'user measurements')
+
+    def test_windows_names_and_protected_folders_are_validated_on_every_platform(self):
+        invalid = ('DATA/measurements.csv', '.VENV/python.exe', 'Backups/app.py',
+                   r'models\..\data\x', r'C:\app.py', r'\\server\share\app.py',
+                   'models/file.pt:stream', 'models/CON.txt', 'models/NUL',
+                   'models/file.pt.', 'models/file.pt ', './app.py', '', 'models//file.pt')
+        for name in invalid:
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                update.safe_relative(name)
+        self.assertEqual(update.safe_relative(r'models\own.pt'), Path('models')/'own.pt')
+
+    def test_case_insensitive_duplicate_files_and_malformed_manifests_are_rejected(self):
+        self.manifest['files']['APP.PY'] = self.manifest['files']['app.py']; self.write_manifest()
+        with self.assertRaises(ValueError):
+            update.install_update(self.source, self.target)
+        for files in ([], {}, {'app.py': None}):
+            self.manifest['files'] = files; self.write_manifest()
+            with self.assertRaises(ValueError):
+                update.install_update(self.source, self.target)
+        self.assertEqual((self.target/'app.py').read_bytes(), b'old app')
+
+    def test_junction_like_backup_destination_is_rejected(self):
+        with patch.object(update, 'is_link', side_effect=lambda p: p.name == 'backups'):
+            with self.assertRaises(ValueError):
+                update.install_update(self.source, self.target)
+        self.assertEqual((self.target/'app.py').read_bytes(), b'old app')
+
+    def test_bad_copy_hash_rolls_back_before_application_is_launched(self):
+        original = update.atomic_copy
+        calls = []
+        def corrupt_once(source, destination):
+            calls.append(str(destination))
+            if len(calls) == 1:
+                destination.write_bytes(b'incorrect copy')
+            else:
+                original(source, destination)
+        with patch.object(update, 'atomic_copy', side_effect=corrupt_once):
+            with self.assertRaisesRegex(OSError, 'コピー後'):
+                update.install_update(self.source, self.target)
+        self.assertEqual((self.target/'app.py').read_bytes(), b'old app')
+
+    def test_one_restore_error_does_not_prevent_other_files_from_being_restored(self):
+        (self.target/'new.py').write_bytes(b'old second file')
+        (self.source/'third.py').write_bytes(b'new third file')
+        self.manifest['files']['third.py'] = hashlib.sha256((self.source/'third.py').read_bytes()).hexdigest()
+        self.write_manifest()
+        original = update.atomic_copy
+        def fail_update_and_one_restore(source, destination):
+            if source == self.source/'third.py':
+                raise OSError('update failed')
+            if 'backups' in source.parts and source.name == 'new.py':
+                raise OSError('restore failed')
+            original(source, destination)
+        with patch.object(update, 'atomic_copy', side_effect=fail_update_and_one_restore):
+            with self.assertRaisesRegex(OSError, 'バックアップは残しています'):
+                update.install_update(self.source, self.target)
+        self.assertEqual((self.target/'app.py').read_bytes(), b'old app')
+        self.assertFalse((self.target/'third.py').exists())
+        records = list((self.target/'backups').glob('*/_kaiko_backup/record.json'))
+        self.assertEqual(len(records), 1)
+        record = json.loads(records[0].read_text())
+        self.assertEqual(record['status'], 'rollback_incomplete')
+        self.assertEqual(record['restore_errors'][0]['path'], 'new.py')

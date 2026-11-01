@@ -1,5 +1,6 @@
 """Optional local inference with the channel's own model; identity is unverified."""
 from pathlib import Path
+import hashlib
 
 import cv2
 import numpy as np
@@ -47,6 +48,7 @@ class LocalScratchSegmenter:
             raise RuntimeError('自作モデル用のPyTorchが必要です。setup_scratch_windows.batを実行してください。') from exc
         torch.set_num_threads(3)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.model_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
         self.model, self.metadata = load_model(path)
         self.model.to(self.device).eval()
 
@@ -56,4 +58,5 @@ class LocalScratchSegmenter:
         if view is None:
             return [], self.device
         probability = predict(self.model, cv2.cvtColor(view, cv2.COLOR_BGR2RGB))
-        return scratch_candidates(probability, settings, offset), self.device
+        return scratch_candidates(probability, settings, offset,
+                                  threshold=float(self.metadata.get('inference_threshold', .5))), self.device

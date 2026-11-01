@@ -3,14 +3,47 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
+import tempfile
 
 import cv2
 import numpy as np
 
+import collect_youtube_samples as collector
 from collect_youtube_samples import youtube_samples
 
 
 class YouTubeSampleTests(unittest.TestCase):
+    def test_newer_launcher_module_is_selected_over_old_path_executable(self):
+        calls = []
+        def run(command, **kwargs):
+            calls.append((command, kwargs))
+            version = b'2026.10.26' if '-m' in command else b'2026.03.17'
+            return SimpleNamespace(returncode=0, stdout=version, stderr=b'')
+        with patch.object(collector, 'IS_WINDOWS', True), patch.object(collector, '_local_candidates', return_value=[['old-yt-dlp.exe']]), patch.object(collector.shutil, 'which', return_value='py.exe'), patch.object(collector.importlib.util, 'find_spec', return_value=None):
+            selected = collector.find_tool('yt-dlp', runner=run)
+        self.assertEqual(selected, ['py.exe', '-m', 'yt_dlp'])
+        self.assertTrue(all(k['shell'] is False and k['timeout']==5 for _, k in calls))
+
+    def test_winget_ffmpeg_is_found_without_refreshed_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            exe = root/'Microsoft/WinGet/Packages/Gyan.FFmpeg_example/ffmpeg-9-full_build/bin/ffmpeg.exe'
+            exe.parent.mkdir(parents=True); exe.write_bytes(b'test')
+            with patch.object(collector, 'IS_WINDOWS', True), patch.object(collector.shutil, 'which', return_value=None), patch.dict(collector.os.environ, {'LOCALAPPDATA':str(root)}):
+                self.assertEqual(collector.find_tool('ffmpeg'), [str(exe)])
+
+    def test_error_details_identify_tool_and_redact_urls_and_authorization(self):
+        def run(command, **kwargs):
+            self.assertFalse(kwargs['shell'])
+            return SimpleNamespace(returncode=1, stdout=b'private metadata should not be logged', stderr=b'ERROR: video not available https://cdn.example/media?signature=SECRET\nAuthorization: Bearer PRIVATE\ncookie=a=COOKIEVALUE; b=VALUE')
+        with self.assertRaises(RuntimeError) as result:
+            collector._run(['py.exe','-m','yt_dlp','url'],run,10)
+        detail = str(result.exception)
+        self.assertIn('yt-dlp', detail); self.assertIn('video not available', detail)
+        for value in ['SECRET','PRIVATE','COOKIEVALUE','metadata should not','cdn.example']:
+            self.assertNotIn(value,detail)
+
     def test_downloads_only_sections_and_preserves_decoded_image_size(self):
         commands, temporary_files = [], []
         original = np.full((72, 128, 3), (31, 80, 120), np.uint8)
