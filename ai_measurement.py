@@ -237,11 +237,13 @@ class AIJob:
 
 class AIWorker:
     """One job at a time. Never run Torch or touch Tk widgets on the UI thread."""
-    def __init__(self, factory=LocalSegmenter, scratch_factory=None):
+    def __init__(self, factory=LocalSegmenter, scratch_factory=None, texture_factory=None):
         self.factory = factory
         self.engine = None
         self.scratch_factory = scratch_factory
         self.scratch_engine = None
+        self.texture_factory = texture_factory
+        self.texture_engine = None
         self.jobs = queue.Queue(maxsize=1)
         self.results = queue.Queue(maxsize=1)
         self.stopped = threading.Event()
@@ -272,9 +274,18 @@ class AIWorker:
                 continue
             start = time.monotonic()
             try:
-                if job.backend not in {"mobile_sam", "scratch"}:
+                if job.backend not in {"mobile_sam", "scratch", "scratch_preview"}:
                     raise ValueError("不明な解析方式です。")
-                if job.backend == "scratch":
+                if job.backend == "scratch_preview":
+                    if job.prompt_points is not None:
+                        raise ValueError("輪郭確認モデルは手動の点解析には対応していません。")
+                    if self.texture_engine is None:
+                        if self.texture_factory is None:
+                            from scratch_measurement import LocalTexturePreviewSegmenter
+                            self.texture_factory = LocalTexturePreviewSegmenter
+                        self.texture_engine = self.texture_factory()
+                    engine = self.texture_engine
+                elif job.backend == "scratch":
                     if job.prompt_points is not None:
                         raise ValueError("自作モデルは点の指定による解析には対応していません。")
                     if self.scratch_engine is None:
@@ -294,7 +305,7 @@ class AIWorker:
                         job.frame, job.settings, job.roi, job.prompt_points, job.prompt_labels)
                 result = {"job": job, "candidates": candidates, "device": device,
                           "seconds": time.monotonic()-start, "error": None}
-                if job.backend == "scratch":
+                if job.backend.startswith("scratch"):
                     result["model_version"] = getattr(engine, "metadata", {}).get("model_version")
                     result["inference_threshold"] = getattr(engine, "metadata", {}).get("inference_threshold", .5)
                     result["model_sha256"] = getattr(engine, "model_sha256", None)

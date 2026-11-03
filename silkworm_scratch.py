@@ -16,6 +16,9 @@ from PIL import Image
 
 
 def create_model(architecture='kaiko_small_unet_v1'):
+    if architecture == 'kaiko_texture_mlp_v1':
+        from silkworm_texture import create_texture_model
+        return create_texture_model()
     import torch
     from torch import nn
     from torch.nn import functional as F
@@ -205,6 +208,9 @@ def load_model(path):
 
 
 def predict(model, rgb, tile=384, halo=64):
+    if getattr(model, 'feature_input', False):
+        from silkworm_texture import predict_texture
+        return predict_texture(model, rgb)
     import torch
     if rgb.ndim != 3 or rgb.shape[2] != 3 or tile < 4 or tile % 4 or halo % 4:
         raise ValueError('Expected RGB image, and tile/halo multiples of four')

@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from ai_measurement import content_view, mask_geometry
+from measurement import Candidate
 
 
 def scratch_candidates(probabilities, settings, offset=(0, 0), threshold=.5):
@@ -53,6 +54,8 @@ class LocalScratchSegmenter:
         self.model.to(self.device).eval()
 
     def analyze(self, frame, settings, roi=None):
+        if self.metadata.get('purpose') == 'semantic_region_preview_only_no_counts_no_lengths':
+            raise RuntimeError('輪郭確認モデルは自動体長に使えません。自作輪郭の解析方式を選んでください。')
         from silkworm_scratch import predict
         view, offset = content_view(frame, roi)
         if view is None:
@@ -60,3 +63,32 @@ class LocalScratchSegmenter:
         probability = predict(self.model, cv2.cvtColor(view, cv2.COLOR_BGR2RGB))
         return scratch_candidates(probability, settings, offset,
                                   threshold=float(self.metadata.get('inference_threshold', .5))), self.device
+
+
+class LocalTexturePreviewSegmenter(LocalScratchSegmenter):
+    """Semantic outlines only: disconnected pieces must never become lengths."""
+    def __init__(self, model_path=None):
+        super().__init__(model_path or Path(__file__).parent/'models/kaiko_texture.pt')
+        if self.metadata.get('architecture') != 'kaiko_texture_mlp_v1':
+            raise RuntimeError('輪郭確認モデルの形式が違います。更新ZIPを確認してください。')
+
+    def analyze(self, frame, settings, roi=None):
+        from silkworm_scratch import predict
+        settings.validate()
+        view, offset = content_view(frame, roi)
+        if view is None:
+            return [], self.device
+        probability = predict(self.model, cv2.cvtColor(view, cv2.COLOR_BGR2RGB))
+        mask = (probability >= float(self.metadata['inference_threshold'])).astype(np.uint8)
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        result = []
+        for i in range(1, count):
+            x, y, w, h, area = map(int, stats[i])
+            if not settings.min_area <= area <= settings.max_area:
+                continue
+            local = (labels[y:y+h, x:x+w] == i).astype(np.uint8)
+            contours, _ = cv2.findContours(local, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                result.append(Candidate(contour+np.array([x+offset[0], y+offset[1]]),
+                                        None, None, 'semantic_preview'))
+        return result, self.device

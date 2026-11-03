@@ -164,7 +164,7 @@ class App:
         ttk.Label(engines, text="解析方式").pack(side="left")
         self.ai_engine_choice = tk.StringVar(value="自作モデル（試験）")
         engine_menu = ttk.Combobox(engines, textvariable=self.ai_engine_choice,
-                                  values=["自作モデル（試験）", "MobileSAM（従来）"], state="readonly", width=24)
+                                  values=["自作モデル（試験）", "自作輪郭（比較v6）", "MobileSAM（従来）"], state="readonly", width=24)
         engine_menu.pack(side="left", padx=5)
         engine_menu.bind("<<ComboboxSelected>>", self.change_ai_engine)
         ttk.Label(engines, text="自作モデルは明るい体・暗い体を一緒に解析します。結果は未確認の候補です。").pack(side="left", padx=8)
@@ -223,7 +223,7 @@ class App:
         self.items = tk.Listbox(side, width=32, height=8)
         self.items.pack(fill="x", pady=10)
         self.items.bind("<<ListboxSelect>>", self.select_prompt)
-        ttk.Label(side, text="緑：未確認の候補線　橙：除外領域\n候補の個数は蚕の匹数ではありません。\n番号はこの画面内の仮番号です。", wraplength=280).pack(anchor="w")
+        ttk.Label(side, text="青：輪郭確認（未確認）\n緑：未確認の候補線　橙：除外領域\n候補の個数は蚕の匹数ではありません。\n番号はこの画面内の仮番号です。", wraplength=280).pack(anchor="w")
         ttk.Label(side, text="候補線の平均長（未確認・この起動内）", wraplength=280).pack(anchor="w", pady=(16, 3))
         self.chart = tk.Canvas(side, width=280, height=150, bg="white", highlightthickness=0)
         self.chart.pack()
@@ -316,6 +316,9 @@ class App:
             messagebox.showinfo("保存先", str(self.data))
 
     def begin(self, mode):
+        if mode == "ai_point" and self.selected_ai_engine().startswith("scratch"):
+            self.tell("自作モデルではクリック補助は使いません。体長は『手動で体長をなぞる』で確認できます。")
+            return
         if self.frame is None:
             return
         self.paused = True
@@ -611,7 +614,7 @@ class App:
         self.tell("一時停止中です。" if self.paused else "試験的な候補抽出中です。蚕の認識は未確認です。")
 
     def start_ai_fine(self):
-        if self.selected_ai_engine() == "scratch":
+        if self.selected_ai_engine().startswith("scratch"):
             self.tell("自作モデルは『AIでこの画面を解析』を使ってください。詳細探索とクリック補助は従来モデル用です。")
             return
         if self.frame is None:
@@ -674,7 +677,7 @@ class App:
                     (self.series, self.ai_generation), backend=self.selected_ai_engine())
         if self.ai_worker.submit(job):
             self.ai_pending = False
-            timing = "自作モデルで解析中です。" if job.backend == "scratch" else ("詳細探索中です。CPUでは数分かかる場合があります。" if self.settings.ai_search == "fine" else "AI解析中です。CPUでは数十秒かかる場合があります。")
+            timing = "自作モデルで解析中です。" if job.backend.startswith("scratch") else ("詳細探索中です。CPUでは数分かかる場合があります。" if self.settings.ai_search == "fine" else "AI解析中です。CPUでは数十秒かかる場合があります。")
             self.tell(timing + "表示中の輪郭は前回の静止結果です。")
             self.write_obs("蚕CHANNEL | AI候補を解析中\n蚕の認識は未確認・体長の測定値なし")
 
@@ -706,19 +709,25 @@ class App:
         # Draw masks only on the exact frame sent to the worker.
         self.frame, self.position = job.frame, job.position
         self.last_model_info = ({key: result.get(key) for key in ('model_version', 'inference_threshold', 'model_sha256')
-                                 if result.get(key) is not None} if job.backend == 'scratch' else {})
+                                 if result.get(key) is not None} if job.backend.startswith('scratch') else {})
         self.candidates, self.mask = result["candidates"], None
         self.show_mask.set(False)
         fine = job.settings.ai_search == "fine"
         version = result.get("model_version")
-        name = (f"自作モデル {version}・静止結果" if version else "自作モデル・静止結果") if job.backend == "scratch" else ("AI詳細探索・静止結果" if fine else "AI静止結果")
+        name = (f"自作モデル {version}・静止結果" if version else "自作モデル・静止結果") if job.backend.startswith("scratch") else ("AI詳細探索・静止結果" if fine else "AI静止結果")
         prefix = f"{name}（{result['device']}・{result['seconds']:.1f}秒）\n"
-        method = "scratch_auto_candidate" if job.backend == "scratch" else ("sam_fine_candidate" if fine else "sam_auto_candidate")
+        method = "scratch_auto_candidate" if job.backend.startswith("scratch") else ("sam_fine_candidate" if fine else "sam_auto_candidate")
+        if job.backend == "scratch_preview":
+            self.publish_candidates("scratch_region_preview", prefix)
+            self.tell("青い輪郭は未確認の領域です。体の一部や誤検出も含みます。体長は『手動で体長をなぞる』で確認できます。")
+            return
         self.publish_candidates(method, prefix, self.ai_mode == "single")
         self.tell(f"AI解析が完了しました（{result['seconds']:.1f}秒）。緑の線が蚕の全身をたどるか確認してください。部分的な体や誤検出も残ります。")
 
     def selected_ai_engine(self):
         choice = getattr(self, "ai_engine_choice", None)
+        if choice is not None and choice.get() == "自作輪郭（比較v6）":
+            return "scratch_preview"
         return "scratch" if choice is not None and choice.get().startswith("自作") else "mobile_sam"
 
     def change_ai_engine(self, _event=None):
@@ -777,6 +786,14 @@ class App:
         self.publish_candidates()
 
     def publish_candidates(self, method="auto_candidate", prefix="", force_record=False):
+        if method == "scratch_region_preview":
+            self.result.set(prefix + f"輪郭候補 {len(self.candidates)} 領域\n青：未確認の領域\n体の一部・重なり・誤検出を含みます\n頭数・自動体長は計測しません\n体長は手動計測で確認できます")
+            self.items.delete(0, "end")
+            for i in range(len(self.candidates)):
+                self.items.insert("end", f"輪郭 {i+1:02d}（未確認）")
+            self.write_obs("蚕CHANNEL | 自作モデルの輪郭確認中\n体長の測定値なし")
+            self.render()
+            return
         stats = summarize(self.candidates, self.ppmm)
         unit = stats["unit"]
         mean = f"{stats['mean']:.1f} {unit}" if stats["mean"] is not None else "--"
@@ -818,7 +835,8 @@ class App:
         if self.mode == "ai_point" and self.prompt_selected is not None:
             shown = [self.prompt_candidates[self.prompt_selected]]
         for c in shown:
-            color = (80, 220, 100) if c.length_px is not None else (0, 165, 255)
+            color = ((230, 180, 30) if c.reason == "semantic_preview" else
+                     ((80, 220, 100) if c.length_px is not None else (0, 165, 255)))
             cv2.drawContours(frame, [c.contour], -1, color, 1)
             if c.path is not None:
                 number += 1

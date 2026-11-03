@@ -49,7 +49,7 @@ try:
             metadata = checkpoint.get('metadata', {})
             architecture = metadata.get('architecture')
             state = checkpoint.get('state_dict')
-            if architecture not in ('kaiko_small_unet_v1', 'kaiko_context_unet_v2') or not isinstance(state, dict) or not state:
+            if architecture not in ('kaiko_small_unet_v1', 'kaiko_context_unet_v2', 'kaiko_texture_mlp_v1') or not isinstance(state, dict) or not state:
                 raise ValueError('Unexpected checkpoint format')
             if not all(isinstance(value, torch.Tensor) for value in state.values()):
                 raise ValueError('Unexpected state values')

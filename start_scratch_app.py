@@ -13,12 +13,16 @@ def main():
     root = tk.Tk()
     try:
         app = App(root)
-        example = Path(__file__).parent/'examples/startup.png'
+        preview = Path(__file__).parent/'examples/instar5.png'
+        use_preview = preview.is_file() and (Path(__file__).parent/'models/kaiko_texture.pt').is_file()
+        example = preview if use_preview else Path(__file__).parent/'examples/startup.png'
         if example.is_file():
             image = cv2.imdecode(np.fromfile(example, dtype=np.uint8), cv2.IMREAD_COLOR)
             if image is None:
                 raise ValueError('参考画像を読み込めませんでした。')
-            app.reset_source('参考画像（2齢・自動解析は未確認）')
+            if use_preview:
+                app.ai_engine_choice.set('自作輪郭（比較v6）')
+            app.reset_source('参考画像（5齢・輪郭確認）' if use_preview else '参考画像（2齢・自動解析は未確認）')
             app.frame = image
             app.render()
             root.after(150, app.start_ai_once)
