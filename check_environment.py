@@ -130,7 +130,8 @@ def collect_environment(base=BASE, runner=subprocess.run, command_finder=nvidia_
             model_info['sha256'] = hashlib.sha256(model.read_bytes()).hexdigest()
         except OSError as exc:
             model_info['read_error'] = type(exc).__name__
-    in_venv = Path(sys.prefix).resolve() == (base/'.venv').resolve()
+    expected_env = Path(os.environ.get('KAIKO_VENV_PATH', str(base/'.venv')))
+    in_venv = Path(sys.prefix).resolve() == expected_env.resolve()
     with ThreadPoolExecutor(max_workers=3) as pool:
         dependencies = {name: pool.submit(run_json_probe, IMPORT_PROBE, [name], 10, runner)
                         for name, _ in DEPENDENCIES}

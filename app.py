@@ -164,7 +164,7 @@ class App:
         ttk.Label(engines, text="解析方式").pack(side="left")
         self.ai_engine_choice = tk.StringVar(value="自作モデル（試験）")
         engine_menu = ttk.Combobox(engines, textvariable=self.ai_engine_choice,
-                                  values=["自作モデル（試験）", "自作輪郭（比較）", "自作輪郭（以前のv6）", "MobileSAM（従来）"], state="readonly", width=24)
+                                  values=(["自作モデル（試験）", "自作輪郭（比較）", "自作輪郭（以前のv6）"] + ([] if os.environ.get("KAIKO_ONE_CLICK") == "1" else ["MobileSAM（従来）"])), state="readonly", width=24)
         engine_menu.pack(side="left", padx=5)
         engine_menu.bind("<<ComboboxSelected>>", self.change_ai_engine)
         ttk.Label(engines, text="自作モデルは明るい体・暗い体を一緒に解析します。結果は未確認の候補です。").pack(side="left", padx=8)

@@ -10,7 +10,7 @@ import tempfile
 from datetime import datetime
 
 
-PROTECTED_FOLDERS = {'.venv', 'data', 'output', 'backups', '_kaiko_backup'}
+PROTECTED_FOLDERS = {'.venv', 'data', 'output', 'backups', '_kaiko_backup', 'runtime', 'logs', 'updates'}
 
 
 def safe_relative(name):
@@ -24,7 +24,7 @@ def safe_relative(name):
            or any(ord(c) < 32 or c in '<>:"|?*' for c in part)
            or part.split('.')[0].casefold() in device_names for part in parts):
         raise ValueError('更新先に不正なWindowsファイル名が含まれています。')
-    if parts[0].casefold() in PROTECTED_FOLDERS:
+    if any(part.casefold() in PROTECTED_FOLDERS for part in parts):
         raise ValueError('計測記録・Python環境・バックアップは更新対象にできません。')
     return Path(*parts)
 
@@ -57,13 +57,21 @@ def atomic_copy(source, destination):
         Path(name).unlink(missing_ok=True)
 
 
-def install_update(source, target):
+def install_update(source, target, *, layout="legacy", allow_new=False):
     source, target = Path(source).resolve(), Path(target).resolve()
     if source == target:
         raise ValueError('更新ZIP側ではなく、これまで使っていたapp.pyを選んでください。')
-    if not (target/'app.py').is_file() or not (target/'.venv/Scripts/python.exe').is_file():
-        raise ValueError('今までのapp.pyと.venvがあるフォルダを選んでください。')
-    manifest = json.loads((source/'update_manifest.json').read_text(encoding='utf-8'))
+    if layout not in ('legacy', 'one_click'):
+        raise ValueError('不明なインストール形式です。')
+    app_name = '_internal/app.py' if layout == 'one_click' else 'app.py'
+    manifest_name = '_internal/update_manifest.json' if layout == 'one_click' else 'update_manifest.json'
+    if layout == 'legacy':
+        if not (target/app_name).is_file() or not (target/'.venv/Scripts/python.exe').is_file():
+            raise ValueError('今までのapp.pyと.venvがあるフォルダを選んでください。')
+    elif not allow_new and not (target/app_name).is_file():
+        raise ValueError('インストール済みのアプリがありません。')
+    target.mkdir(parents=True, exist_ok=True)
+    manifest = json.loads(check_path(source, Path(manifest_name)).read_text(encoding='utf-8-sig'))
     plans = []
     files = manifest.get('files') if isinstance(manifest, dict) else None
     if not isinstance(files, dict) or not files:
@@ -71,6 +79,8 @@ def install_update(source, target):
     seen = set()
     for name, expected in files.items():
         relative = safe_relative(name)
+        if layout == 'one_click' and relative.as_posix().casefold() == manifest_name.casefold():
+            raise ValueError('マニフェストは自分自身を登録できません。')
         identity = '/'.join(relative.parts).casefold()
         if identity in seen or not isinstance(expected, str) or not re.fullmatch('[0-9a-fA-F]{64}', expected):
             raise ValueError('更新内容に重複した名前または不正なハッシュがあります。')
@@ -86,9 +96,21 @@ def install_update(source, target):
                 break
             if parent.exists() and not parent.is_dir():
                 raise ValueError('更新先のフォルダを確認してください。')
+        if layout == 'one_click' and relative.suffix.casefold() == '.bat' and dst.exists():
+            # cmd.exe may still be reading this file. Its forwarding shim is
+            # immutable; update the PowerShell/Python helpers instead.
+            if hashlib.sha256(dst.read_bytes()).hexdigest() != expected:
+                raise ValueError('起動バッチの互換性を確認してください。')
+            continue
         plans.append((relative, src, dst, dst.exists(), expected))
-    if not plans or not any(str(p[0]) == 'app.py' for p in plans):
+    if not plans or not any(p[0].as_posix() == app_name for p in plans):
         raise ValueError('更新内容が空です。')
+    if layout == 'one_click':
+        relative = Path(manifest_name)
+        src, dst = check_path(source, relative), check_path(target, relative)
+        if dst.exists() and not dst.is_file():
+            raise ValueError('更新先マニフェストを確認してください。')
+        plans.append((relative, src, dst, dst.exists(), hashlib.sha256(src.read_bytes()).hexdigest()))
     backup = Path(tempfile.mkdtemp(prefix=datetime.now().strftime('self_model_%Y%m%d_%H%M%S_'),
                                    dir=_backup_root(target)))
     # Back up every replaced file before changing any application files.
@@ -198,3 +220,32 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+def restore_update(backup, target):
+    """Restore a completed update after dependency/launch verification failed."""
+    backup, target = Path(backup).resolve(), Path(target).resolve()
+    if not backup.is_relative_to((target/'backups').resolve()):
+        raise ValueError('バックアップの場所を確認してください。')
+    record_path = backup/'_kaiko_backup/record.json'
+    record = json.loads(record_path.read_text(encoding='utf-8'))
+    if Path(record['target']).resolve() != target:
+        raise ValueError('バックアップの対象が違います。')
+    errors = []
+    for item in reversed(record['files']):
+        try:
+            relative = safe_relative(item['path'])
+            dst = check_path(target, relative)
+            if item['existed']:
+                src = check_path(backup, relative)
+                if hashlib.sha256(src.read_bytes()).hexdigest() != item['original_sha256']:
+                    raise ValueError('バックアップのハッシュが違います。')
+                atomic_copy(src, dst)
+            else:
+                dst.unlink(missing_ok=True)
+        except Exception as exc:
+            errors.append({'path': item['path'], 'error': str(exc)})
+    record.update(status='rollback_incomplete' if errors else 'rolled_back', restore_errors=errors)
+    record_path.write_text(json.dumps(record,ensure_ascii=False,indent=2),encoding='utf-8')
+    if errors:
+        raise OSError('元に戻せないファイルがあります。バックアップは保持しています。')

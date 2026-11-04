@@ -1,5 +1,6 @@
 """Optional local inference with the channel's own model; identity is unverified."""
 from pathlib import Path
+import os
 import hashlib
 
 import cv2
@@ -46,7 +47,8 @@ class LocalScratchSegmenter:
             import torch
             from silkworm_scratch import load_model
         except ImportError as exc:
-            raise RuntimeError('自作モデル用のPyTorchが必要です。setup_scratch_windows.batを実行してください。') from exc
+            hint = '蚕チェック.bat' if os.environ.get('KAIKO_ONE_CLICK') == '1' else 'setup_scratch_windows.bat'
+            raise RuntimeError(f'自作モデル用のライブラリを読み込めません。{hint}を開いてください。') from exc
         torch.set_num_threads(3)
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.model_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()

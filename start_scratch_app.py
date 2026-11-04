@@ -9,7 +9,7 @@ import numpy as np
 from app import App
 
 
-def main():
+def main(on_ready=None):
     root = tk.Tk()
     try:
         app = App(root)
@@ -30,6 +30,9 @@ def main():
         messagebox.showerror('起動エラー', str(exc))
         root.destroy()
         return
+    root.update_idletasks()
+    if on_ready is not None:
+        on_ready()
     root.mainloop()
 
 
