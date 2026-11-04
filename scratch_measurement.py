@@ -75,20 +75,27 @@ class LocalTexturePreviewSegmenter(LocalScratchSegmenter):
     def analyze(self, frame, settings, roi=None):
         from silkworm_scratch import predict
         settings.validate()
+        self.last_preview_mask = np.zeros(frame.shape[:2], np.uint8)
         view, offset = content_view(frame, roi)
         if view is None:
             return [], self.device
         probability = predict(self.model, cv2.cvtColor(view, cv2.COLOR_BGR2RGB))
         mask = (probability >= float(self.metadata['inference_threshold'])).astype(np.uint8)
         count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        keep = stats[:, cv2.CC_STAT_AREA] >= settings.min_area
+        keep[0] = False
+        x0, y0 = offset
+        self.last_preview_mask[y0:y0+mask.shape[0], x0:x0+mask.shape[1]] = keep[labels].astype(np.uint8)*255
         result = []
         for i in range(1, count):
             x, y, w, h, area = map(int, stats[i])
-            if not settings.min_area <= area <= settings.max_area:
+            # A semantic region can contain several touching bodies. The
+            # individual-body area limit must not silently hide that region.
+            if area < settings.min_area:
                 continue
             local = (labels[y:y+h, x:x+w] == i).astype(np.uint8)
             contours, _ = cv2.findContours(local, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for contour in contours:
                 result.append(Candidate(contour+np.array([x+offset[0], y+offset[1]]),
-                                        None, None, 'semantic_preview'))
+                                        None, None, 'semantic_preview_large' if area > settings.max_area else 'semantic_preview'))
         return result, self.device

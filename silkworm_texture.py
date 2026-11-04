@@ -49,18 +49,35 @@ def create_texture_model():
     return TextureMLP()
 
 
-def predict_texture(model, rgb, batch_size=32768):
-    """Compute features at source resolution; bound device-side tensor memory."""
+def predict_texture(model, rgb, batch_size=32768, tile_size=768):
+    """Preserve source pixels and use overlapping tiles to bound feature memory.
+
+    136 pixels cover the largest Gaussian radius (128), plus its Sobel
+    derivative. Border handling therefore matches a whole-image calculation.
+    Pass tile_size=None only for reference comparisons on bounded images.
+    """
     import torch
-    if batch_size < 1:
-        raise ValueError('Batch size must be positive')
-    f = features(rgb)
-    shape = f.shape[:2]
-    flat = f.reshape(-1, FEATURE_COUNT)
-    probability = np.empty(len(flat), np.float32)
+    rgb = np.asarray(rgb)
+    if rgb.dtype != np.uint8 or rgb.ndim != 3 or rgb.shape[2] != 3 or not rgb.size:
+        raise ValueError('Expected non-empty uint8 RGB image')
+    if batch_size < 1 or (tile_size is not None and (not isinstance(tile_size, int) or tile_size < 1)):
+        raise ValueError('Batch/tile sizes must be positive')
+    height, width = rgb.shape[:2]
+    step = max(height, width) if tile_size is None else tile_size
+    probability = np.empty((height, width), np.float32)
     device = next(model.parameters()).device
     with torch.inference_mode():
-        for start in range(0, len(flat), batch_size):
-            tensor = torch.from_numpy(flat[start:start+batch_size]).to(device)
-            probability[start:start+batch_size] = model(tensor).sigmoid()[:, 0].cpu().numpy()
-    return probability.reshape(shape)
+        for top in range(0, height, step):
+            for left in range(0, width, step):
+                bottom, right = min(top+step, height), min(left+step, width)
+                y0, x0 = max(0, top-136), max(0, left-136)
+                y1, x1 = min(height, bottom+136), min(width, right+136)
+                f = features(rgb[y0:y1, x0:x1])
+                inner = f[top-y0:bottom-y0, left-x0:right-x0]
+                flat = np.ascontiguousarray(inner).reshape(-1, FEATURE_COUNT)
+                result = np.empty(len(flat), np.float32)
+                for start in range(0, len(flat), batch_size):
+                    tensor = torch.from_numpy(flat[start:start+batch_size]).to(device)
+                    result[start:start+batch_size] = model(tensor).sigmoid()[:, 0].cpu().numpy()
+                probability[top:bottom, left:right] = result.reshape(bottom-top, right-left)
+    return probability

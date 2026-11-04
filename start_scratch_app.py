@@ -21,7 +21,7 @@ def main():
             if image is None:
                 raise ValueError('参考画像を読み込めませんでした。')
             if use_preview:
-                app.ai_engine_choice.set('自作輪郭（比較v6）')
+                app.ai_engine_choice.set('自作輪郭（比較）')
             app.reset_source('参考画像（5齢・輪郭確認）' if use_preview else '参考画像（2齢・自動解析は未確認）')
             app.frame = image
             app.render()

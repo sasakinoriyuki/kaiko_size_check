@@ -164,7 +164,7 @@ class App:
         ttk.Label(engines, text="解析方式").pack(side="left")
         self.ai_engine_choice = tk.StringVar(value="自作モデル（試験）")
         engine_menu = ttk.Combobox(engines, textvariable=self.ai_engine_choice,
-                                  values=["自作モデル（試験）", "自作輪郭（比較v6）", "MobileSAM（従来）"], state="readonly", width=24)
+                                  values=["自作モデル（試験）", "自作輪郭（比較）", "自作輪郭（以前のv6）", "MobileSAM（従来）"], state="readonly", width=24)
         engine_menu.pack(side="left", padx=5)
         engine_menu.bind("<<ComboboxSelected>>", self.change_ai_engine)
         ttk.Label(engines, text="自作モデルは明るい体・暗い体を一緒に解析します。結果は未確認の候補です。").pack(side="left", padx=8)
@@ -710,14 +710,15 @@ class App:
         self.frame, self.position = job.frame, job.position
         self.last_model_info = ({key: result.get(key) for key in ('model_version', 'inference_threshold', 'model_sha256')
                                  if result.get(key) is not None} if job.backend.startswith('scratch') else {})
-        self.candidates, self.mask = result["candidates"], None
+        self.candidates = result["candidates"]
+        self.mask = result.get("preview_mask") if job.backend.startswith("scratch_preview") else None
         self.show_mask.set(False)
         fine = job.settings.ai_search == "fine"
         version = result.get("model_version")
         name = (f"自作モデル {version}・静止結果" if version else "自作モデル・静止結果") if job.backend.startswith("scratch") else ("AI詳細探索・静止結果" if fine else "AI静止結果")
         prefix = f"{name}（{result['device']}・{result['seconds']:.1f}秒）\n"
         method = "scratch_auto_candidate" if job.backend.startswith("scratch") else ("sam_fine_candidate" if fine else "sam_auto_candidate")
-        if job.backend == "scratch_preview":
+        if job.backend.startswith("scratch_preview"):
             self.publish_candidates("scratch_region_preview", prefix)
             self.tell("青い輪郭は未確認の領域です。体の一部や誤検出も含みます。体長は『手動で体長をなぞる』で確認できます。")
             return
@@ -726,7 +727,9 @@ class App:
 
     def selected_ai_engine(self):
         choice = getattr(self, "ai_engine_choice", None)
-        if choice is not None and choice.get() == "自作輪郭（比較v6）":
+        if choice is not None and choice.get() == "自作輪郭（以前のv6）":
+            return "scratch_preview_v6"
+        if choice is not None and choice.get().startswith("自作輪郭"):
             return "scratch_preview"
         return "scratch" if choice is not None and choice.get().startswith("自作") else "mobile_sam"
 
@@ -787,10 +790,11 @@ class App:
 
     def publish_candidates(self, method="auto_candidate", prefix="", force_record=False):
         if method == "scratch_region_preview":
-            self.result.set(prefix + f"輪郭候補 {len(self.candidates)} 領域\n青：未確認の領域\n体の一部・重なり・誤検出を含みます\n頭数・自動体長は計測しません\n体長は手動計測で確認できます")
+            self.result.set(prefix + "未確認の領域プレビュー\n青：モデルが選んだ領域\n大きな結合領域も表示しています\n体の一部・重なり・誤検出を含みます\n頭数・自動体長は計測しません\n体長は手動計測で確認できます")
             self.items.delete(0, "end")
-            for i in range(len(self.candidates)):
-                self.items.insert("end", f"輪郭 {i+1:02d}（未確認）")
+            for text in ("青い領域が体に沿うか確認します", "葉・容器の誤検出も残っています",
+                         "検出マスク表示で白黒に切り替え", "体長の記録は手動計測を使います"):
+                self.items.insert("end", text)
             self.write_obs("蚕CHANNEL | 自作モデルの輪郭確認中\n体長の測定値なし")
             self.render()
             return
@@ -829,13 +833,16 @@ class App:
         if self.show_mask.get() and self.mask is not None:
             frame[:] = 0
             x0, y0, x1, y1 = self.roi or (0, 0, frame.shape[1], frame.shape[0])
-            frame[y0:y1, x0:x1] = cv2.cvtColor(self.mask, cv2.COLOR_GRAY2BGR)
+            if self.mask.shape == frame.shape[:2]:
+                frame[:] = cv2.cvtColor(self.mask, cv2.COLOR_GRAY2BGR)
+            else:
+                frame[y0:y1, x0:x1] = cv2.cvtColor(self.mask, cv2.COLOR_GRAY2BGR)
         number = 0
         shown = self.candidates if self.mode == "auto" else []
         if self.mode == "ai_point" and self.prompt_selected is not None:
             shown = [self.prompt_candidates[self.prompt_selected]]
         for c in shown:
-            color = ((230, 180, 30) if c.reason == "semantic_preview" else
+            color = ((230, 180, 30) if c.reason.startswith("semantic_preview") else
                      ((80, 220, 100) if c.length_px is not None else (0, 165, 255)))
             cv2.drawContours(frame, [c.contour], -1, color, 1)
             if c.path is not None:
