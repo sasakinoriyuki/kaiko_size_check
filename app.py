@@ -82,7 +82,7 @@ class Capture:
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("蚕CHANNEL 体長チェック — 自作モデル試験版")
+        root.title("蚕CHANNEL 体長チェック — " + ("学校用・" if os.environ.get('KAIKO_SCHOOL_MODE') == '1' else '') + "自作モデル試験版")
         root.geometry("1380x930")
         root.minsize(1150, 800)
         self.capture = None

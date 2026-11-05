@@ -130,6 +130,17 @@ class OneClickInstallTests(unittest.TestCase):
         boot.atomic_json(self.target/'_internal/data/install_state.json',{'active_environment':'../elsewhere'})
         with self.assertRaises(boot.SetupError):boot.load_state(self.target)
 
+    def test_school_launcher_cannot_install_into_a_desktop_installation(self):
+        manifest_path=self.source/'_internal/update_manifest.json'
+        manifest=json.loads(manifest_path.read_text());manifest['installation_flavor']='school'
+        manifest_path.write_text(json.dumps(manifest))
+        with patch.object(boot,'ensure_environment') as prepare:
+            with self.assertRaisesRegex(boot.SetupError,'学校用と通常版'):
+                boot.run(self.source,self.target,lambda _:None,allow_online=False)
+        prepare.assert_not_called()
+        self.assertEqual((self.target/'_internal/app.py').read_bytes(),b'old')
+        self.assertEqual(boot.load_state(self.target),self.previous)
+
     def test_lock_and_legacy_data_copy_do_not_destroy_originals(self):
         lock=FileLock(self.root/'lock');self.assertTrue(lock.acquire())
         another=FileLock(self.root/'lock');self.assertFalse(another.acquire());lock.release();self.assertTrue(another.acquire());another.release()
@@ -205,3 +216,29 @@ class SignedUpdateTests(unittest.TestCase):
             self.assertIsNone(boot.choose_online(source,2,root,lambda _:None,fetch=old_feed));self.assertEqual(len(calls),1)
             def offline(*args,**kwargs):raise OSError('offline')
             self.assertIsNone(boot.choose_online(source,1,root,lambda _:None,fetch=offline))
+
+    def test_school_rejects_authentic_desktop_update_and_cleans_staging(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);source=root/'school';package(source)
+            manifest_path=source/'_internal/update_manifest.json'
+            manifest=json.loads(manifest_path.read_text());manifest['installation_flavor']='school'
+            manifest_path.write_text(json.dumps(manifest))
+            (source/'_internal/update_channel.json').write_text(json.dumps({'feed_url':'https://drive.google.com/uc?id=channel'}))
+            (source/'_internal/update_public_key.json').write_text(json.dumps(self.public))
+            incoming=root/'desktop';package(incoming,2,'incoming desktop')
+            raw=archive(incoming);feed=self.envelope(self.info(raw));requests=[]
+            def fetch(url,limit,**kwargs):
+                requests.append(url)
+                return feed if len(requests)==1 else raw
+            logs=[]
+            self.assertIsNone(boot.choose_online(source,1,root,logs.append,fetch=fetch))
+            self.assertEqual(len(requests),2)
+            self.assertEqual(list((root/'updates').iterdir()),[])
+            self.assertEqual((source/'_internal/app.py').read_bytes(),b'original')
+
+    def test_school_with_unconfigured_feed_never_requests_network(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);source=root/'school';package(source)
+            (source/'_internal/update_channel.json').write_text(json.dumps({'schema':1,'feed_url':''}))
+            def fetch(*args,**kwargs):self.fail('An unconfigured school feed must not access the network')
+            self.assertIsNone(boot.choose_online(source,1,root,lambda _:None,fetch=fetch))

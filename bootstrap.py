@@ -178,6 +178,8 @@ def choose_online(package, current_sequence, root, log, fetch=download):
         staging = staging_parent/('package_'+uuid.uuid4().hex)
         try:
             unpack_release(raw,info,staging)
+            if package_flavor(read_package(staging)) != package_flavor(read_package(package)):
+                raise SetupError('学校用と通常版の更新ファイルが異なります。')
         except Exception:
             shutil.rmtree(staging,ignore_errors=True)
             raise
@@ -187,10 +189,20 @@ def choose_online(package, current_sequence, root, log, fetch=download):
         return None
 
 
+def package_flavor(manifest):
+    flavor = manifest.get('installation_flavor','desktop')
+    if flavor not in ('desktop','school'):
+        raise SetupError('対応していない起動版です。')
+    return flavor
+
+
 def select_package(source, installed):
     source_info = read_package(source)
+    flavor = package_flavor(source_info)
     try: installed_info = read_package(installed)
     except (OSError,ValueError,KeyError): installed_info = None
+    if installed_info and package_flavor(installed_info) != flavor:
+        raise SetupError('学校用と通常版の保存先は分けてください。')
     if installed_info and sequence(installed_info)>=sequence(source_info): return Path(installed),installed_info
     return Path(source),source_info
 

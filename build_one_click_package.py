@@ -13,7 +13,7 @@ CODE = ['app.py','measurement.py','ai_measurement.py','scratch_measurement.py','
 MODELS = ['kaiko_scratch','kaiko_texture','kaiko_texture_v6']
 
 
-def build(destination, models, *, examples=None, release_sequence, version, public_update=False):
+def build(destination, models, *, examples=None, release_sequence, version, public_update=False, school=False):
     if type(release_sequence) is not int or release_sequence<1: raise ValueError('Positive release sequence required')
     source = Path(__file__).resolve().parent
     destination = Path(destination); destination.parent.mkdir(parents=True,exist_ok=True)
@@ -25,6 +25,13 @@ def build(destination, models, *, examples=None, release_sequence, version, publ
         (stage/'蚕チェック.bat').write_bytes(bat.encode('ascii'))
         (stage/'はじめに.txt').write_text('ZIPをすべて展開して、蚕チェック.batを開きます。\n初回の準備と次回の起動は同じファイルです。\n自動更新は配信開始後に利用できます。認識モデルの自動体長・頭数は未完成です。\n',encoding='utf-8-sig')
         for name in CODE: shutil.copyfile(source/name,stage/'_internal'/name)
+        if school:
+            # Keep the immutable BAT identical; select the school launcher underneath it.
+            launcher = (source/'bootstrap_school_windows.ps1').read_text(encoding='utf-8-sig')
+            (stage/'_internal/bootstrap_windows.ps1').write_text(launcher,encoding='utf-8-sig')
+            (stage/'_internal/ONE_CLICK.md').write_text((source/'SCHOOL.md').read_text(encoding='utf-8'),encoding='utf-8')
+            (stage/'_internal/update_channel.json').write_text(json.dumps({'schema':1,'feed_url':''}),encoding='utf-8')
+            (stage/'はじめに.txt').write_text('蚕CHANNEL 体長チェック（学校用）\n\nZIPをすべて展開して、蚕チェック.batを開きます。\n使用するPython: X:\\python 3.12\\python.exe\n初回はネット接続が必要です。専用のライブラリを自分のユーザーフォルダへ準備します。\n共有Pythonの変更や別のPythonのインストールは行いません。\n次回も同じBAT、またはデスクトップの「蚕CHANNEL 体長チェック（学校用）」から起動します。\n学校版の自動更新配信は未有効です。認識モデルの自動体長・頭数は未完成です。\n',encoding='utf-8-sig')
         for name in MODELS:
             for suffix in ('.pt','.json'): shutil.copyfile(Path(models)/(name+suffix),stage/'_internal/models'/(name+suffix))
         if examples and not public_update:
@@ -33,7 +40,8 @@ def build(destination, models, *, examples=None, release_sequence, version, publ
                 p=Path(examples)/name
                 if p.is_file(): shutil.copyfile(p,stage/'_internal/examples'/name)
         manifest={'schema_version':2,'layout':'one_click','release_sequence':release_sequence,'version':version,
-                  'auto_update_channel':'signed-feed','files':{p.relative_to(stage).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in stage.rglob('*') if p.is_file()}}
+                  'installation_flavor':'school' if school else 'desktop',
+                  'auto_update_channel':'not-configured' if school else 'signed-feed','files':{p.relative_to(stage).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in stage.rglob('*') if p.is_file()}}
         (stage/'_internal/update_manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
         with zipfile.ZipFile(destination,'w',zipfile.ZIP_DEFLATED) as z:
             for p in sorted(stage.rglob('*')):
@@ -50,4 +58,5 @@ if __name__=='__main__':
     parser.add_argument('--output',required=True);parser.add_argument('--models',required=True)
     parser.add_argument('--examples');parser.add_argument('--release-sequence',required=True,type=int)
     parser.add_argument('--version',required=True);parser.add_argument('--public-update',action='store_true')
-    a=parser.parse_args();build(a.output,a.models,examples=a.examples,release_sequence=a.release_sequence,version=a.version,public_update=a.public_update)
+    parser.add_argument('--school',action='store_true',help='Use the fixed school Python without installing Python')
+    a=parser.parse_args();build(a.output,a.models,examples=a.examples,release_sequence=a.release_sequence,version=a.version,public_update=a.public_update,school=a.school)
