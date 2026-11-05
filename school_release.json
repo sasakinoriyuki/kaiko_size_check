@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "installation_flavor": "school",
+  "version": "2026.11.05-school1",
+  "release_sequence": 9,
+  "source_commit": "9dd54062297d8e44fa49b56447b945589472cf9c",
+  "package": {
+    "name": "kaiko_school.zip",
+    "url": "https://drive.google.com/file/d/1bZ5cXSgn9LUENCZuID4UPICrWKKSJZZu/view?usp=drivesdk",
+    "bytes": 331379,
+    "sha256": "72b9fc9d23133bfb2fbeb699f6d4b1e0a025e54998b70f88d292f669c904173f"
+  },
+  "python_executable": "X:\\python 3.12\\python.exe",
+  "auto_update_feed": "not-configured",
+  "validation": {
+    "unit_tests_passed": 120,
+    "linux_gui_smoke_passed": true,
+    "school_windows_pc_tested": false
+  },
+  "contains_user_images_or_records": false
+}
