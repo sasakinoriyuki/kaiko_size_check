@@ -31,7 +31,7 @@ def build(destination, models, *, examples=None, release_sequence, version, publ
             (stage/'_internal/bootstrap_windows.ps1').write_text(launcher,encoding='utf-8-sig')
             (stage/'_internal/ONE_CLICK.md').write_text((source/'SCHOOL.md').read_text(encoding='utf-8'),encoding='utf-8')
             (stage/'_internal/update_channel.json').write_text(json.dumps({'schema':1,'feed_url':''}),encoding='utf-8')
-            (stage/'はじめに.txt').write_text('蚕CHANNEL 体長チェック（学校用）\n\nZIPをすべて展開して、蚕チェック.batを開きます。\n使用するPython: X:\\python 3.12\\python.exe\n初回はネット接続が必要です。専用のライブラリを自分のユーザーフォルダへ準備します。\n共有Pythonの変更や別のPythonのインストールは行いません。\n次回も同じBAT、またはデスクトップの「蚕CHANNEL 体長チェック（学校用）」から起動します。\n学校版の自動更新配信は未有効です。認識モデルの自動体長・頭数は未完成です。\n',encoding='utf-8-sig')
+            (stage/'はじめに.txt').write_text('蚕CHANNEL 体長チェック（学校用・フォルダ内保存）\n\n使いたいフォルダへZIPをすべて展開して、蚕チェック.batを開きます。\n使用するPython: X:\\python 3.12\\python.exe\n初回はネット接続が必要です。アプリ・専用ライブラリ・記録は展開したフォルダの中に保存します。\n検証用ZIPは data\\samples に入ります。「ZIP保存先を開く」から直接開けます。\n次回も、このフォルダの蚕チェック.batから起動します。\n学校版の自動更新配信は未有効です。認識モデルの自動体長・頭数は未完成です。\n',encoding='utf-8-sig')
         for name in MODELS:
             for suffix in ('.pt','.json'): shutil.copyfile(Path(models)/(name+suffix),stage/'_internal/models'/(name+suffix))
         if examples and not public_update:
@@ -41,6 +41,7 @@ def build(destination, models, *, examples=None, release_sequence, version, publ
                 if p.is_file(): shutil.copyfile(p,stage/'_internal/examples'/name)
         manifest={'schema_version':2,'layout':'one_click','release_sequence':release_sequence,'version':version,
                   'installation_flavor':'school' if school else 'desktop',
+                  'storage_mode':'portable' if school else 'per-user',
                   'auto_update_channel':'not-configured' if school else 'signed-feed','files':{p.relative_to(stage).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in stage.rglob('*') if p.is_file()}}
         (stage/'_internal/update_manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
         with zipfile.ZipFile(destination,'w',zipfile.ZIP_DEFLATED) as z:

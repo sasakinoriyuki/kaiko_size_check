@@ -141,6 +141,40 @@ class OneClickInstallTests(unittest.TestCase):
         self.assertEqual((self.target/'_internal/app.py').read_bytes(),b'old')
         self.assertEqual(boot.load_state(self.target),self.previous)
 
+    def test_portable_school_copies_old_records_without_writing_old_appdata(self):
+        portable=self.root/'portable school';package(portable,3)
+        manifest_path=portable/'_internal/update_manifest.json'
+        manifest=json.loads(manifest_path.read_text());manifest.update(installation_flavor='school',storage_mode='portable')
+        manifest_path.write_text(json.dumps(manifest))
+        local=self.root/'profile/AppData/Local'
+        old=local/'KaikoChannel/SizeCheckSchool/_internal'
+        (old/'data/samples').mkdir(parents=True)
+        (old/'app.py').write_text('蚕CHANNEL 体長チェック',encoding='utf-8')
+        (old/'data/measurements.csv').write_bytes(b'old measurement history')
+        (old/'data/samples/existing.zip').write_bytes(b'old private sample')
+        (old/'data/.setup.lock').write_bytes(b'old lock')
+        snapshots={p:p.read_bytes() for p in local.rglob('*') if p.is_file()}
+        environment=portable/'runtime/venvs'/('b'*20);environment.mkdir(parents=True)
+        with patch.dict(os.environ,{'LOCALAPPDATA':str(local)}),patch.object(boot,'ensure_environment',return_value=environment),patch.object(boot,'preflight'),patch.object(boot,'start_gui'):
+            self.assertEqual(boot.run(portable,portable,lambda _:None,profile=self.root/'profile',allow_online=False),0)
+        self.assertEqual((portable/'data/measurements.csv').read_bytes(),b'old measurement history')
+        self.assertEqual((portable/'data/samples/existing.zip').read_bytes(),b'old private sample')
+        self.assertFalse((portable/'data/.setup.lock').exists())
+        self.assertEqual({p:p.read_bytes() for p in local.rglob('*') if p.is_file()},snapshots)
+        self.assertTrue(boot.load_state(portable)['legacy_import_checked'])
+
+    def test_school_dependency_cache_is_inside_portable_folder(self):
+        manifest_path=self.source/'_internal/update_manifest.json'
+        manifest=json.loads(manifest_path.read_text());manifest.update(installation_flavor='school',storage_mode='portable')
+        manifest_path.write_text(json.dumps(manifest))
+        with patch.object(boot,'versions_ok',side_effect=[False,True]),patch.object(boot,'command') as run:
+            boot.ensure_environment(self.source,self.target,lambda _:None)
+        pip_commands=[call.args[0] for call in run.call_args_list if 'pip' in call.args[0]]
+        self.assertEqual(len(pip_commands),2)
+        for command in pip_commands:
+            self.assertIn('--cache-dir',command)
+            self.assertEqual(command[command.index('--cache-dir')+1],str(self.target/'runtime/pip-cache'))
+
     def test_lock_and_legacy_data_copy_do_not_destroy_originals(self):
         lock=FileLock(self.root/'lock');self.assertTrue(lock.acquire())
         another=FileLock(self.root/'lock');self.assertFalse(another.acquire());lock.release();self.assertTrue(another.acquire());another.release()

@@ -110,6 +110,8 @@ def ensure_environment(package, root, log):
     command([base,'-I','-X','utf8','-m','venv',str(environment)],log)
     interpreter = str(python_in(environment))
     pip = [interpreter,'-I','-X','utf8','-m','pip','--isolated','--disable-pip-version-check']
+    if package_flavor(read_package(package)) == 'school':
+        pip += ['--cache-dir',str(Path(root)/'runtime/pip-cache')]
     command(pip+['install','--index-url','https://pypi.org/simple','--only-binary=:all:','--progress-bar','off','-r',str(Path(package)/'_internal/requirements.txt')],log)
     command(pip+['install','--index-url','https://download.pytorch.org/whl/cpu','--only-binary=:all:','--progress-bar','off','torch=='+expected['torch']+'+cpu'],log)
     if not versions_ok(environment,expected): raise SetupError('ライブラリの確認に失敗しました。')
@@ -157,11 +159,26 @@ def migrate_data(source, target):
         dirs[:] = [d for d in dirs if not is_link(parent/d)]
         for name in files:
             src = parent/name
-            if is_link(src) or name in {'.app.lock','install_state.json','app_state.json'} or name.startswith('.launch_'): continue
+            if is_link(src) or name in {'.app.lock','.setup.lock','install_state.json','app_state.json'} or name.startswith('.launch_'): continue
             dst = target/src.relative_to(source)
             if not dst.exists():
                 atomic_copy(src,dst); copied+=1
     return copied
+
+
+def legacy_school_sources(profile, install_root):
+    """Read the previous school data once; never install into LocalAppData."""
+    local = Path(os.environ.get('LOCALAPPDATA',str(Path(profile)/'AppData/Local')))
+    folder = local/'KaikoChannel/SizeCheckSchool/_internal'
+    data = folder/'data'
+    try:
+        if (not folder.resolve().is_relative_to(Path(install_root).resolve())
+                and not is_link(folder) and not is_link(data)
+                and data.is_dir() and (folder/'app.py').is_file()
+                and '蚕CHANNEL 体長チェック' in (folder/'app.py').read_text(encoding='utf-8-sig')):
+            return [data]
+    except (OSError,UnicodeError): pass
+    return []
 
 
 def choose_online(package, current_sequence, root, log, fetch=download):
@@ -254,6 +271,8 @@ def start_gui(root, environment, log, timeout=35):
     token = uuid.uuid4().hex
     ready = root/'_internal/data'/('.launch_'+token+'.json')
     env = {**os.environ,'KAIKO_ONE_CLICK':'1','KAIKO_VENV_PATH':str(environment)}
+    if read_package(root).get('storage_mode') == 'portable':
+        env['KAIKO_STORAGE_ROOT'] = str(root.resolve())
     process = subprocess.Popen([str(python_in(environment,windowless=True)),'-I','-X','utf8',str(root/'_internal/run_app.py'),'--token',token],cwd=root,env=env,
                                creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     deadline = time.monotonic()+timeout
@@ -301,9 +320,12 @@ def run(source, root, log, profile=None, allow_online=True):
             backup,state = activate(package,root,environment,previous)
             if not state.get('legacy_import_checked'):
                 sources = legacy_sources(profile or Path.home(),root)
+                portable = manifest.get('storage_mode') == 'portable'
+                if portable:
+                    sources = legacy_school_sources(profile or Path.home(),root) + sources
                 if sources:
                     try:
-                        count = migrate_data(sources[0],root/'_internal/data')
+                        count = migrate_data(sources[0],root/('data' if portable else '_internal/data'))
                         log(f'以前の記録を{count}ファイルコピーしました。元のフォルダも残しています。')
                     except OSError as exc: log('以前の記録のコピーは完了していません。元の記録は残っています。('+str(exc)+')')
                 state['legacy_import_checked']=True
