@@ -1,21 +1,26 @@
 {
   "schema": 1,
   "installation_flavor": "school",
-  "version": "2026.11.05-school1",
-  "release_sequence": 9,
-  "source_commit": "9dd54062297d8e44fa49b56447b945589472cf9c",
+  "storage_mode": "portable",
+  "version": "2026.11.06-school2",
+  "release_sequence": 10,
+  "source_commit": "705dd40164e3d3624e212a54078f8a0936a10508",
   "package": {
     "name": "kaiko_school.zip",
     "url": "https://drive.google.com/file/d/1bZ5cXSgn9LUENCZuID4UPICrWKKSJZZu/view?usp=drivesdk",
-    "bytes": 331379,
-    "sha256": "72b9fc9d23133bfb2fbeb699f6d4b1e0a025e54998b70f88d292f669c904173f"
+    "bytes": 332357,
+    "sha256": "8647d862e7923ec90aba3b9d5e53c91e0e596c1356410ba217f10e3329fe7ad1"
   },
   "python_executable": "X:\\python 3.12\\python.exe",
+  "data_directory": "data",
+  "samples_directory": "data/samples",
   "auto_update_feed": "not-configured",
   "validation": {
-    "unit_tests_passed": 120,
-    "linux_gui_smoke_passed": true,
-    "school_windows_pc_tested": false
+    "unit_tests_passed": 122,
+    "in_place_portable_gui_passed": true,
+    "old_appdata_untouched": true,
+    "save_folder_actions_passed": true,
+    "actual_windows_explorer_tested": false
   },
   "contains_user_images_or_records": false
 }
