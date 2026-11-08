@@ -43,8 +43,7 @@ def main(on_ready=None):
     root=tk.Tk()
     try:
         app=App(root)
-        base=Path(__file__).parent
-        image,label=local_reference(base)
+        image,label=local_reference(app.data.parent)
         if image is not None:
             app.ai_engine_choice.set('自作輪郭（比較）')
             app.reset_source(label);app.frame=image;app.render()

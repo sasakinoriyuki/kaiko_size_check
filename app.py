@@ -102,8 +102,9 @@ class App:
         self.last_analysis = 0
         self.latest_acquired = None
         self.display_scale = 1.0
-        self.data = BASE / "data"
-        self.data.mkdir(exist_ok=True)
+        storage_root = os.environ.get("KAIKO_STORAGE_ROOT")
+        self.data = (Path(storage_root) if storage_root else BASE) / "data"
+        self.data.mkdir(parents=True, exist_ok=True)
         self.obs_path = self.data / "obs_status.txt"
         self.csv_path = self.data / "measurements.csv"
         self.io_error = ""
@@ -138,7 +139,6 @@ class App:
         ttk.Entry(top, textvariable=self.camera_index, width=4).pack(side="left")
         ttk.Button(top, text="カメラ接続", command=self.open_camera).pack(side="left", padx=5)
         ttk.Button(top, text="一時停止／再生・自動に戻る", command=self.toggle_pause).pack(side="left")
-        ttk.Button(top, text="保存先を開く", command=self.open_data).pack(side="right")
 
         tools = ttk.Frame(self.root, padding=(8, 0))
         tools.pack(fill="x")
@@ -187,7 +187,16 @@ class App:
         ttk.Button(manual, text="手動測定を確定・保存", command=self.finish_manual).pack(side="left", padx=5)
         ttk.Button(manual, text="1点戻す", command=self.undo).pack(side="left")
         ttk.Label(manual, text="頭から尾まで体の中央をクリック → 確定。隠れた部分は測定できません。").pack(side="left", padx=10)
-        ttk.Button(manual, text="検証用ZIPを保存", command=self.save_sample).pack(side="left", padx=5)
+
+        saved = ttk.LabelFrame(self.root, text="保存したファイル", padding=(8, 5))
+        saved.pack(fill="x", padx=8, pady=(0, 4))
+        ttk.Button(saved, text="検証用ZIPを保存", command=self.save_sample).pack(side="left")
+        ttk.Button(saved, text="ZIP保存先を開く", command=self.open_samples).pack(side="left", padx=5)
+        ttk.Button(saved, text="保存先を開く", command=self.open_data).pack(side="left")
+        ttk.Button(saved, text="パスをコピー", command=self.copy_data_path).pack(side="left", padx=5)
+        ttk.Label(saved, text="保存先:").pack(side="left", padx=(6, 3))
+        self.save_directory = tk.StringVar(value=str(self.data.resolve()))
+        ttk.Entry(saved, textvariable=self.save_directory, state="readonly", width=20).pack(side="left", fill="x", expand=True)
 
         params = ttk.Frame(self.root, padding=8)
         params.pack(fill="x")
@@ -310,10 +319,33 @@ class App:
         self.capture = Capture(index, camera=True)
 
     def open_data(self):
-        if os.name == "nt":
-            os.startfile(self.data)
-        else:
-            messagebox.showinfo("保存先", str(self.data))
+        return self.open_folder(self.data)
+
+    def open_samples(self):
+        return self.open_folder(self.data / "samples")
+
+    def open_folder(self, directory):
+        directory = Path(directory).resolve()
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            if os.name == "nt":
+                os.startfile(str(directory))
+            else:
+                messagebox.showinfo("保存先", str(directory))
+        except OSError as exc:
+            self.tell(f"保存先を開けませんでした: {directory}")
+            messagebox.showerror("保存先を開けません", f"{directory}\n\n{exc}\n\n『パスをコピー』で保存先をコピーし、エクスプローラーのアドレス欄に貼り付けて開くこともできます。")
+            return False
+        return True
+
+    def copy_data_path(self):
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(str(self.data.resolve()))
+        except tk.TclError as exc:
+            messagebox.showerror("コピーできません", str(exc))
+            return
+        self.tell("保存先をコピーしました。エクスプローラーのアドレス欄に貼り付けて開けます。")
 
     def begin(self, mode):
         if mode == "ai_point" and self.selected_ai_engine().startswith("scratch"):
@@ -578,7 +610,7 @@ class App:
                 pass
             self.tell(f"検証画像の保存に失敗しました: {exc}")
             return None
-        self.tell(f"検証用ZIPを保存しました: data/samples/{stem}.zip（画像と設定入り）。『保存先を開く』→samples にあります。")
+        self.tell(f"検証用ZIPを保存しました: {archive_path}（画像と設定入り）。『ZIP保存先を開く』でフォルダを開けます。")
         return archive_path
 
     def apply_settings(self):

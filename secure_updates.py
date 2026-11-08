@@ -13,9 +13,9 @@ import zipfile
 
 from update_and_start import safe_relative
 
-BOOTSTRAP_API = 1
+BOOTSTRAP_API = 2
 MAX_ARCHIVE = 32*1024*1024
-ALLOWED_HOSTS = {'drive.google.com', 'drive.usercontent.google.com'}
+ALLOWED_HOSTS = {'drive.google.com', 'drive.usercontent.google.com', 'raw.githubusercontent.com'}
 
 
 def strict_json(raw):
@@ -91,7 +91,18 @@ def verify_envelope(raw, key):
         raise ValueError('更新ハッシュが不正です。')
     if type(info.get('bytes')) is not int or not 1 <= info['bytes'] <= MAX_ARCHIVE:
         raise ValueError('更新サイズが不正です。')
+    if info.get('encoding','zip') not in ('zip','base64'):
+        raise ValueError('更新ファイルの形式が違います。')
     return info
+
+
+def download_package(info, fetch=download):
+    if info.get('encoding','zip') == 'base64':
+        limit = ((info['bytes']+2)//3)*4+2
+        encoded = fetch(info['url'],limit,timeout=30)
+        if len(encoded)>limit: raise ValueError('更新サイズが大きすぎます。')
+        return base64.b64decode(encoded.strip(),validate=True)
+    return fetch(info['url'],min(info['bytes'],MAX_ARCHIVE),timeout=30)
 
 
 def read_package(root):
@@ -116,7 +127,8 @@ def read_package(root):
         path = check_path(root,relative)
         if not isinstance(digest,str) or not re.fullmatch('[a-f0-9]{64}',digest) or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest()!=digest:
             raise ValueError(f'不足・破損したファイルがあります：{relative.name}')
-    if bats != ['蚕チェック.bat']:
+    expected_bats = [] if manifest.get('entrypoint') == 'external_launcher' else ['蚕チェック.bat']
+    if bats != expected_bats:
         raise ValueError('起動バッチは蚕チェック.batの1本だけ必要です。')
     return manifest
 

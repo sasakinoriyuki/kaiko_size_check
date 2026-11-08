@@ -17,7 +17,7 @@ import uuid
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 
 from instance_lock import FileLock
-from secure_updates import read_package, sequence, verify_envelope, download, unpack_release, MAX_ARCHIVE
+from secure_updates import read_package, sequence, verify_envelope, download, download_package, unpack_release, MAX_ARCHIVE
 from update_and_start import atomic_copy, check_path, install_update, is_link, restore_update
 
 
@@ -110,6 +110,8 @@ def ensure_environment(package, root, log):
     command([base,'-I','-X','utf8','-m','venv',str(environment)],log)
     interpreter = str(python_in(environment))
     pip = [interpreter,'-I','-X','utf8','-m','pip','--isolated','--disable-pip-version-check']
+    if read_package(package).get('storage_mode') == 'portable':
+        pip += ['--cache-dir',str(Path(root)/'runtime/pip-cache')]
     command(pip+['install','--index-url','https://pypi.org/simple','--only-binary=:all:','--progress-bar','off','-r',str(Path(package)/'_internal/requirements.txt')],log)
     command(pip+['install','--index-url','https://download.pytorch.org/whl/cpu','--only-binary=:all:','--progress-bar','off','torch=='+expected['torch']+'+cpu'],log)
     if not versions_ok(environment,expected): raise SetupError('ライブラリの確認に失敗しました。')
@@ -137,6 +139,8 @@ def legacy_sources(profile, install_root):
             folder,depth = frontier.pop(); visited+=1
             if folder.resolve().is_relative_to(Path(install_root).resolve()): continue
             app,data = folder/'app.py',folder/'data'
+            if not app.is_file() and (folder/'_internal/app.py').is_file():
+                app = folder/'_internal/app.py'
             try:
                 if app.is_file() and data.is_dir() and not is_link(data) and '蚕CHANNEL 体長チェック' in app.read_text(encoding='utf-8-sig'):
                     record = data/'measurements.csv'
@@ -157,11 +161,27 @@ def migrate_data(source, target):
         dirs[:] = [d for d in dirs if not is_link(parent/d)]
         for name in files:
             src = parent/name
-            if is_link(src) or name in {'.app.lock','install_state.json','app_state.json'} or name.startswith('.launch_'): continue
+            if is_link(src) or name in {'.app.lock','.setup.lock','install_state.json','app_state.json'} or name.startswith('.launch_'): continue
             dst = target/src.relative_to(source)
             if not dst.exists():
                 atomic_copy(src,dst); copied+=1
     return copied
+
+
+def legacy_school_sources(profile, install_root, flavor='school'):
+    """Read the previous school data once; never install into LocalAppData."""
+    local = Path(os.environ.get('LOCALAPPDATA',str(Path(profile)/'AppData/Local')))
+    name = 'SizeCheckSchool' if flavor == 'school' else 'SizeCheck'
+    folder = local/'KaikoChannel'/name/'_internal'
+    data = folder/'data'
+    try:
+        if (not folder.resolve().is_relative_to(Path(install_root).resolve())
+                and not is_link(folder) and not is_link(data)
+                and data.is_dir() and (folder/'app.py').is_file()
+                and '蚕CHANNEL 体長チェック' in (folder/'app.py').read_text(encoding='utf-8-sig')):
+            return [data]
+    except (OSError,UnicodeError): pass
+    return []
 
 
 def choose_online(package, current_sequence, root, log, fetch=download):
@@ -171,9 +191,11 @@ def choose_online(package, current_sequence, root, log, fetch=download):
     try:
         key = json.loads((internal/'update_public_key.json').read_text(encoding='utf-8'))
         info = verify_envelope(fetch(config['feed_url'],65536,timeout=4),key)
+        if config.get('channel') and info.get('channel') != config['channel']:
+            raise SetupError('更新先のブランチが違います。')
         if sequence(info)<=current_sequence: return None
         log('新しい版が見つかりました。更新ファイルを確認しています。')
-        raw = fetch(info['url'],min(info['bytes'],MAX_ARCHIVE),timeout=30)
+        raw = download_package(info,fetch=fetch)
         staging_parent = Path(root)/'updates'; staging_parent.mkdir(parents=True,exist_ok=True)
         staging = staging_parent/('package_'+uuid.uuid4().hex)
         try:
@@ -254,6 +276,8 @@ def start_gui(root, environment, log, timeout=35):
     token = uuid.uuid4().hex
     ready = root/'_internal/data'/('.launch_'+token+'.json')
     env = {**os.environ,'KAIKO_ONE_CLICK':'1','KAIKO_VENV_PATH':str(environment)}
+    if read_package(root).get('storage_mode') == 'portable':
+        env['KAIKO_STORAGE_ROOT'] = str(root.resolve())
     process = subprocess.Popen([str(python_in(environment,windowless=True)),'-I','-X','utf8',str(root/'_internal/run_app.py'),'--token',token],cwd=root,env=env,
                                creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     deadline = time.monotonic()+timeout
@@ -301,9 +325,12 @@ def run(source, root, log, profile=None, allow_online=True):
             backup,state = activate(package,root,environment,previous)
             if not state.get('legacy_import_checked'):
                 sources = legacy_sources(profile or Path.home(),root)
+                portable = manifest.get('storage_mode') == 'portable'
+                if portable:
+                    sources = legacy_school_sources(profile or Path.home(),root,package_flavor(manifest)) + sources
                 if sources:
                     try:
-                        count = migrate_data(sources[0],root/'_internal/data')
+                        count = migrate_data(sources[0],root/('data' if portable else '_internal/data'))
                         log(f'以前の記録を{count}ファイルコピーしました。元のフォルダも残しています。')
                     except OSError as exc: log('以前の記録のコピーは完了していません。元の記録は残っています。('+str(exc)+')')
                 state['legacy_import_checked']=True

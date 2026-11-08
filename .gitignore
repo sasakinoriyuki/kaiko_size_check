@@ -5,3 +5,8 @@ output/
 *.pyc
 models/
 examples/startup.png
+/runtime/
+/logs/
+/updates/
+/backups/
+/_internal/
