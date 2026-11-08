@@ -175,6 +175,15 @@ class OneClickInstallTests(unittest.TestCase):
             self.assertIn('--cache-dir',command)
             self.assertEqual(command[command.index('--cache-dir')+1],str(self.target/'runtime/pip-cache'))
 
+    def test_new_torch_requirement_prepares_a_separate_environment(self):
+        (self.source/'_internal/runtime.json').write_text(json.dumps({'python':[3,12],'torch_version':'2.9.0'}))
+        (self.environment/'old_runtime').write_bytes(b'keep working environment')
+        with patch.object(boot,'versions_ok',side_effect=[False,True]),patch.object(boot,'command') as run:
+            environment=boot.ensure_environment(self.source,self.target,lambda _:None)
+        self.assertNotEqual(environment,self.environment)
+        self.assertEqual((self.environment/'old_runtime').read_bytes(),b'keep working environment')
+        self.assertTrue(any('torch==2.9.0+cpu' in call.args[0] for call in run.call_args_list))
+
     def test_lock_and_legacy_data_copy_do_not_destroy_originals(self):
         lock=FileLock(self.root/'lock');self.assertTrue(lock.acquire())
         another=FileLock(self.root/'lock');self.assertFalse(another.acquire());lock.release();self.assertTrue(another.acquire());another.release()
@@ -276,3 +285,44 @@ class SignedUpdateTests(unittest.TestCase):
             (source/'_internal/update_channel.json').write_text(json.dumps({'schema':1,'feed_url':''}))
             def fetch(*args,**kwargs):self.fail('An unconfigured school feed must not access the network')
             self.assertIsNone(boot.choose_online(source,1,root,lambda _:None,fetch=fetch))
+
+    def test_signed_base64_github_package_decodes_and_checks_integrity(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);source=root/'src';package(source,2)
+            raw=archive(source)
+            info={**self.info(raw),'minimum_bootstrap':2,'encoding':'base64','channel':'school',
+                  'url':'https://raw.githubusercontent.com/owner/repo/school/.updates/package.b64'}
+            self.assertEqual(updates.verify_envelope(self.envelope(info),self.public),info)
+            encoded=base64.b64encode(raw)+b'\n'
+            decoded=updates.download_package(info,fetch=lambda *args,**kwargs:encoded)
+            self.assertEqual(decoded,raw)
+            updates.unpack_release(decoded,info,root/'verified')
+            with self.assertRaises(ValueError):
+                updates.download_package(info,fetch=lambda *args,**kwargs:encoded[:10]+b'!'+encoded[11:])
+            with self.assertRaises(ValueError):
+                updates.unpack_release(decoded+b'bad',info,root/'corrupted')
+
+    def test_payload_updates_never_rewrite_the_external_launcher(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);source=root/'src';target=root/'target';package(source,2);package(target,1)
+            manifest_path=source/'_internal/update_manifest.json'
+            manifest=json.loads(manifest_path.read_text());manifest['entrypoint']='external_launcher'
+            del manifest['files']['蚕チェック.bat'];(source/'蚕チェック.bat').unlink()
+            manifest_path.write_text(json.dumps(manifest))
+            raw=archive(source);updates.unpack_release(raw,self.info(raw),root/'verified')
+            (target/'蚕チェック.bat').write_bytes(b'original standalone starter')
+            install_update(source,target,layout='one_click')
+            updates.read_package(target)
+            self.assertEqual((target/'蚕チェック.bat').read_bytes(),b'original standalone starter')
+
+    def test_github_channel_mismatch_never_downloads_another_branches_program(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);source=root/'src';package(source)
+            (source/'_internal/update_channel.json').write_text(json.dumps({'channel':'school','feed_url':'https://raw.githubusercontent.com/owner/repo/school/channel.json'}))
+            (source/'_internal/update_public_key.json').write_text(json.dumps(self.public))
+            calls=[]
+            def fetch(url,limit,**kwargs):
+                calls.append(url)
+                return self.envelope({**self.info(),'channel':'parsonal'})
+            self.assertIsNone(boot.choose_online(source,1,root,lambda _:None,fetch=fetch))
+            self.assertEqual(len(calls),1)

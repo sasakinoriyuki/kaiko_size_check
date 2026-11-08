@@ -1,4 +1,5 @@
 {
-  "feed_url": "https://drive.google.com/uc?export=download&id=1GTJWy5YJ2l845QZ7Wqx7D-wWvSnEoHAg",
-  "schema": 1
+  "schema": 1,
+  "channel": "school",
+  "feed_url": "https://raw.githubusercontent.com/sasakinoriyuki/kaiko_size_check/school/.updates/channel.json"
 }

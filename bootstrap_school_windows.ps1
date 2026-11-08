@@ -2,6 +2,7 @@
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $kaikoPackage = Split-Path -Parent $PSScriptRoot
 $kaikoInstall = $kaikoPackage
+if ($env:KAIKO_INSTALL_ROOT) { $kaikoInstall = $env:KAIKO_INSTALL_ROOT }
 $kaikoPython = 'X:\python 3.12\python.exe'
 $kaikoLogs = Join-Path $kaikoInstall 'logs'
 $kaikoLog = Join-Path $kaikoLogs ('setup_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.txt')
