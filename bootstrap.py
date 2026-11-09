@@ -118,12 +118,19 @@ def ensure_environment(package, root, log):
     return environment
 
 
-def preflight(package, environment, log):
+def preflight(package, environment, log, install_root=None):
     names = ['kaiko_scratch.pt','kaiko_texture.pt','kaiko_texture_v6.pt']
     if any(not (Path(package)/'_internal/models'/name).is_file() for name in names):
         raise SetupError('必要な自作モデルが不足しています。')
     code = "import sys;sys.path.insert(0,sys.argv[1]);import cv2,numpy as np,scipy,skimage,PIL,tkinter,torch;torch.set_num_threads(3);from silkworm_scratch import load_model,predict;from pathlib import Path;models=[load_model(Path(sys.argv[1])/'models'/name)[0] for name in ['kaiko_scratch.pt','kaiko_texture.pt','kaiko_texture_v6.pt']];outputs=[predict(m,np.zeros((32,48,3),np.uint8)) for m in models];assert all(p.shape==(32,48) and np.isfinite(p).all() for p in outputs);print('ライブラリと自作モデルを確認しました。')"
     command([str(python_in(environment)),'-I','-X','utf8','-c',code,str(Path(package)/'_internal')],log,timeout=60)
+    if (Path(package)/'_internal/instance_detector.py').is_file():
+        # Large, pinned model assets live in the installed folder and survive
+        # program updates. Neither model files nor caches use AppData.
+        destination=Path(install_root or package)/'_internal/models/silkworm_dsri.pt'
+        asset_code="import sys;sys.path.insert(0,sys.argv[1]);from instance_detector import ensure_instance_model,load_detector;import torch;torch.set_num_threads(3);p=ensure_instance_model(sys.argv[2]);m=load_detector(p);print('蚕専用モデルを確認しました。')"
+        log('無料の蚕専用モデルを準備しています（初回 約7MB）。')
+        command([str(python_in(environment)),'-I','-X','utf8','-c',asset_code,str(Path(package)/'_internal'),str(destination)],log,timeout=120)
 
 
 def legacy_sources(profile, install_root):
@@ -321,7 +328,7 @@ def run(source, root, log, profile=None, allow_online=True):
         try:
             environment = ensure_environment(package,root,log)
             if package!=root or previous.get('active_environment')!=environment.relative_to(root).as_posix():
-                preflight(package,environment,log)
+                preflight(package,environment,log,install_root=root)
             backup,state = activate(package,root,environment,previous)
             if not state.get('legacy_import_checked'):
                 sources = legacy_sources(profile or Path.home(),root)

@@ -82,7 +82,7 @@ class Capture:
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("蚕CHANNEL 体長チェック — " + ("学校用・" if os.environ.get('KAIKO_SCHOOL_MODE') == '1' else '') + "自作モデル試験版")
+        root.title("蚕CHANNEL 体長チェック — " + ("学校用・" if os.environ.get('KAIKO_SCHOOL_MODE') == '1' else '') + "1〜5齢 自動計測・試験版")
         root.geometry("1380x930")
         root.minsize(1150, 800)
         self.capture = None
@@ -158,23 +158,23 @@ class App:
         ttk.Label(layouts, text="試験的な候補抽出").pack(side="left", padx=(12, 5))
         ttk.Combobox(layouts, textvariable=self.appearance, values=["明るい蚕", "暗い蚕"],
                      state="readonly", width=12).pack(side="left")
-        ttk.Label(layouts, text="齢によらず選択し、検出設定を適用してください。").pack(side="left", padx=8)
+        ttk.Label(layouts, text="明暗・面積の設定は『色と形』方式用です。自動計測では切替不要です。").pack(side="left", padx=8)
         engines = ttk.Frame(self.root, padding=(8, 2))
         engines.pack(fill="x")
         ttk.Label(engines, text="解析方式").pack(side="left")
-        self.ai_engine_choice = tk.StringVar(value="自作モデル（試験）")
+        self.ai_engine_choice = tk.StringVar(value="自動計測（1〜5齢）")
         engine_menu = ttk.Combobox(engines, textvariable=self.ai_engine_choice,
-                                  values=(["自作モデル（試験）", "自作輪郭（比較）", "自作輪郭（以前のv6）"] + ([] if os.environ.get("KAIKO_ONE_CLICK") == "1" else ["MobileSAM（従来）"])), state="readonly", width=24)
+                                  values=(["自動計測（1〜5齢）", "自作モデル（試験）", "自作輪郭（比較）", "自作輪郭（以前のv6）", "色と形（試験）"] + ([] if os.environ.get("KAIKO_ONE_CLICK") == "1" else ["MobileSAM（従来）"])), state="readonly", width=24)
         engine_menu.pack(side="left", padx=5)
         engine_menu.bind("<<ComboboxSelected>>", self.change_ai_engine)
-        ttk.Label(engines, text="自作モデルは明るい体・暗い体を一緒に解析します。結果は未確認の候補です。").pack(side="left", padx=8)
+        ttk.Label(engines, text="自動計測：画像・カメラを開くと開始。mm表示には基準線を設定します。").pack(side="left", padx=8)
         ai = ttk.Frame(self.root, padding=(8, 5))
         ai.pack(fill="x")
         ttk.Button(ai, text="AIでこの画面を解析", command=self.start_ai_once).pack(side="left")
         ttk.Button(ai, text="小さい蚕を細かく探索（試験）", command=self.start_ai_fine).pack(side="left", padx=5)
         ttk.Button(ai, text="AIで映像を繰り返し解析", command=self.start_ai_live).pack(side="left", padx=5)
         ttk.Button(ai, text="色と形の抽出に戻る", command=self.stop_ai).pack(side="left")
-        ttk.Label(ai, text="自作モデルは配布された重みを使います。詳細探索・クリック補助は従来モデル用です。", wraplength=300).pack(side="left", padx=8)
+        ttk.Label(ai, text="自動計測は無料の蚕専用モデルを使用。小さい蚕は拡大探索。緑：体長推定／橙：体長保留。", wraplength=300).pack(side="left", padx=8)
         guided = ttk.Frame(self.root, padding=(8, 2))
         guided.pack(fill="x")
         ttk.Button(guided, text="蚕をクリックして拾い直す", command=lambda: self.begin("ai_point")).pack(side="left")
@@ -232,12 +232,12 @@ class App:
         self.items = tk.Listbox(side, width=32, height=8)
         self.items.pack(fill="x", pady=10)
         self.items.bind("<<ListboxSelect>>", self.select_prompt)
-        ttk.Label(side, text="青：輪郭確認（未確認）\n緑：未確認の候補線　橙：除外領域\n候補の個数は蚕の匹数ではありません。\n番号はこの画面内の仮番号です。", wraplength=280).pack(anchor="w")
-        ttk.Label(side, text="候補線の平均長（未確認・この起動内）", wraplength=280).pack(anchor="w", pady=(16, 3))
+        ttk.Label(side, text="緑：自動体長の推定線\n橙：体長を保留した領域\n青：従来モデルの輪郭プレビュー\n番号は画面内の仮番号です。", wraplength=280).pack(anchor="w")
+        ttk.Label(side, text="平均長の推移（この起動内・測定できた個体）", wraplength=280).pack(anchor="w", pady=(16, 3))
         self.chart = tk.Canvas(side, width=280, height=150, bg="white", highlightthickness=0)
         self.chart.pack()
-        ttk.Label(side, text="蚕の認識精度は未確認です。\n葉・背景の誤検出も含みます。\n蚕の体長や成長の実測値としては使えません。", wraplength=280).pack(anchor="w", pady=6)
-        ttk.Label(self.root, text="試作版：自動検出の実映像での精度は未検証です。身体が隠れている場合は全長を確定できません。", padding=8).pack(fill="x")
+        ttk.Label(side, text="誤検出・見逃しは残ります。\n葉の下の個体は数えられません。\n同じ個体の成長率を表すグラフではありません。", wraplength=280).pack(anchor="w", pady=6)
+        ttk.Label(self.root, text="体長は画像上の推定値です。葉・重なりで隠れた体は全長を確定できません。番号は画面内の仮番号です。", padding=8).pack(fill="x")
 
     def tell(self, text):
         self.status.set(text + (f"　保存エラー: {self.io_error}" if self.io_error else ""))
@@ -288,7 +288,8 @@ class App:
         self.reset_source(name)
         self.frame = frame
         self.process()
-        self.tell("静止画です。基準線・測定範囲を指定できます。実映像の調整は画像や録画から始めてください。")
+        if self.selected_ai_engine() != 'instance':
+            self.tell("静止画です。基準線・測定範囲を指定できます。")
 
     def open_file(self):
         name = filedialog.askopenfilename(filetypes=[("画像・録画", "*.png *.jpg *.jpeg *.bmp *.mp4 *.mkv *.avi *.mov"), ("すべて", "*.*")])
@@ -348,8 +349,8 @@ class App:
         self.tell("保存先をコピーしました。エクスプローラーのアドレス欄に貼り付けて開けます。")
 
     def begin(self, mode):
-        if mode == "ai_point" and self.selected_ai_engine().startswith("scratch"):
-            self.tell("自作モデルではクリック補助は使いません。体長は『手動で体長をなぞる』で確認できます。")
+        if mode == "ai_point" and (self.selected_ai_engine().startswith("scratch") or self.selected_ai_engine() == 'instance'):
+            self.tell("この方式は自動で解析します。手動で補正する場合は『手動で体長をなぞる』を使います。")
             return
         if self.frame is None:
             return
@@ -646,6 +647,10 @@ class App:
         self.tell("一時停止中です。" if self.paused else "試験的な候補抽出中です。蚕の認識は未確認です。")
 
     def start_ai_fine(self):
+        if self.selected_ai_engine() == 'instance':
+            self.standard_settings = replace(self.settings, ai_search='standard')
+            self.start_ai_once(fine=True)
+            return
         if self.selected_ai_engine().startswith("scratch"):
             self.tell("自作モデルは『AIでこの画面を解析』を使ってください。詳細探索とクリック補助は従来モデル用です。")
             return
@@ -665,6 +670,9 @@ class App:
             var.set(str(getattr(settings, key)))
 
     def start_ai_once(self, fine=False):
+        if self.selected_ai_engine() == 'threshold':
+            self.process()
+            return
         if self.frame is None:
             self.tell("先に画像または映像を開いてください。")
             return
@@ -691,6 +699,8 @@ class App:
         self.request_ai(self.frame, self.position)
 
     def stop_ai(self):
+        if hasattr(self,'ai_engine_choice'):
+            self.ai_engine_choice.set('色と形（試験）')
         self.ai_mode, self.ai_failed, self.ai_pending = "off", False, False
         self.mode, self.points = "auto", []
         self.new_series()
@@ -709,7 +719,7 @@ class App:
                     (self.series, self.ai_generation), backend=self.selected_ai_engine())
         if self.ai_worker.submit(job):
             self.ai_pending = False
-            timing = "自作モデルで解析中です。" if job.backend.startswith("scratch") else ("詳細探索中です。CPUでは数分かかる場合があります。" if self.settings.ai_search == "fine" else "AI解析中です。CPUでは数十秒かかる場合があります。")
+            timing = "蚕を個別に検出・体長を計算しています。初回はモデルを準備します。" if job.backend == 'instance' else ("自作モデルで解析中です。" if job.backend.startswith("scratch") else ("詳細探索中です。CPUでは数分かかる場合があります。" if self.settings.ai_search == "fine" else "AI解析中です。CPUでは数十秒かかる場合があります。"))
             self.tell(timing + "表示中の輪郭は前回の静止結果です。")
             self.write_obs("蚕CHANNEL | AI候補を解析中\n蚕の認識は未確認・体長の測定値なし")
 
@@ -741,7 +751,10 @@ class App:
         # Draw masks only on the exact frame sent to the worker.
         self.frame, self.position = job.frame, job.position
         self.last_model_info = ({key: result.get(key) for key in ('model_version', 'inference_threshold', 'model_sha256')
-                                 if result.get(key) is not None} if job.backend.startswith('scratch') else {})
+                                 if result.get(key) is not None} if job.backend.startswith('scratch') or job.backend == 'instance' else {})
+        if job.backend == 'instance':
+            self.last_model_info.update(result.get('measurement_info',{}))
+            self.last_model_info['instances'] = [{'confidence':getattr(c,'confidence',None),'length_px':c.length_px,'reason':c.reason} for c in result['candidates']]
         self.candidates = result["candidates"]
         self.mask = result.get("preview_mask") if job.backend.startswith("scratch_preview") else None
         self.show_mask.set(False)
@@ -749,6 +762,11 @@ class App:
         version = result.get("model_version")
         name = (f"自作モデル {version}・静止結果" if version else "自作モデル・静止結果") if job.backend.startswith("scratch") else ("AI詳細探索・静止結果" if fine else "AI静止結果")
         prefix = f"{name}（{result['device']}・{result['seconds']:.1f}秒）\n"
+        if job.backend == 'instance':
+            prefix = f"自動計測・推定（{result['device']}・{result['seconds']:.1f}秒）\n"
+            self.publish_candidates('auto_instance_estimate',prefix,self.ai_mode == 'single')
+            self.tell(f"自動計測しました（{result['seconds']:.1f}秒）。緑：体長推定／橙：重なり・見切れ等で体長保留。基準未設定ではpx表示です。")
+            return
         method = "scratch_auto_candidate" if job.backend.startswith("scratch") else ("sam_fine_candidate" if fine else "sam_auto_candidate")
         if job.backend.startswith("scratch_preview"):
             self.publish_candidates("scratch_region_preview", prefix)
@@ -759,6 +777,10 @@ class App:
 
     def selected_ai_engine(self):
         choice = getattr(self, "ai_engine_choice", None)
+        if choice is not None and choice.get() == '自動計測（1〜5齢）':
+            return 'instance'
+        if choice is not None and choice.get() == '色と形（試験）':
+            return 'threshold'
         if choice is not None and choice.get() == "自作輪郭（以前のv6）":
             return "scratch_preview_v6"
         if choice is not None and choice.get().startswith("自作輪郭"):
@@ -778,6 +800,10 @@ class App:
         self.render()
         self.write_obs("蚕CHANNEL | 解析方式を変更\n体長の測定値なし")
         self.tell("解析方式を変更しました。画像・範囲を確認してAI解析ボタンを押してください。")
+        if self.selected_ai_engine() == 'instance' and self.frame is not None and not self.source.startswith('デモ'):
+            self.paused = not bool(self.capture)
+            if self.capture:self.capture.pause.clear()
+            self.process()
 
     def log(self, stats, method="auto_candidate", points=None):
         row = {
@@ -789,7 +815,7 @@ class App:
             "lengths": json.dumps(stats["lengths"]), "pixels_per_mm": self.ppmm,
             "resolution": f"{self.frame.shape[1]}x{self.frame.shape[0]}",
             "roi": json.dumps(self.roi), "settings": json.dumps({**self.settings.dictionary(),
-                                                                  **(getattr(self, 'last_model_info', {}) if method == 'scratch_auto_candidate' else {})}),
+                                                                  **(getattr(self, 'last_model_info', {}) if method in {'scratch_auto_candidate','auto_instance_estimate'} else {})}),
             "calibration_points": json.dumps(self.calibration_points),
             "manual_points": json.dumps(points),
         }
@@ -810,6 +836,9 @@ class App:
     def process(self):
         if self.frame is None:
             return
+        if getattr(self,'ai_mode','off') == 'off' and self.selected_ai_engine() == 'instance' and not self.source.startswith('デモ'):
+            self.ai_mode = 'live' if self.capture else 'single'
+            if not self.capture:self.paused = True
         if getattr(self, "ai_mode", "off") != "off":
             if self.ai_mode == "live" and self.paused:
                 self.result.set("AIの繰り返し解析を一時停止中\n再生すると現在の設定で解析します。")
@@ -835,6 +864,26 @@ class App:
         mean = f"{stats['mean']:.1f} {unit}" if stats["mean"] is not None else "--"
         span = f"{stats['min']:.1f}〜{stats['max']:.1f} {unit}" if stats["count"] else "--"
         scale = "基準設定済み" if self.ppmm is not None else "基準未設定（px）"
+        if method == 'auto_instance_estimate':
+            self.result.set(prefix + f"検出候補 {len(self.candidates)} 領域\n体長推定 {stats['count']} 匹分\n平均 {mean}\n最小〜最大 {span}\n体長保留 {stats['excluded_regions']} 領域\n{scale}\n見えている個体の参考値です")
+            self.items.delete(0,'end')
+            reasons={'low_confidence':'検出の確信度不足','edge':'画面端','fragmented':'輪郭の欠け','branch':'輪郭の分岐','loop':'輪郭の重なり','overlap':'個体の重なり','overlap_at_end':'頭尾の重なり','shape':'形状確認','short':'小さすぎる','outside_mask':'中心線の確認'}
+            n=0
+            for c in self.candidates:
+                if c.length_px is not None:
+                    n+=1
+                    self.items.insert('end',f"推定 {n:02d}   {c.length_px/(self.ppmm or 1):.1f} {unit}")
+            for c in self.candidates:
+                if c.length_px is None:self.items.insert('end','保留：'+reasons.get(c.reason,c.reason))
+            stamp=datetime.now().astimezone().strftime('%H:%M:%S')
+            self.write_obs(f"蚕CHANNEL | 自動計測・推定 {stamp}\n体長平均 {mean}（{stats['count']}匹分）\n検出 {len(self.candidates)}領域・体長保留 {stats['excluded_regions']}\n{scale}")
+            now=time.monotonic()
+            if (force_record or (not self.paused and not self.ended and now-self.last_log>=10)) and not self.source.startswith('デモ'):
+                self.last_log=now
+                self.log(stats,method)
+                self.history.append((now,stats['mean']));self.history=self.history[-600:]
+            self.render()
+            return
         self.result.set(prefix + f"未確認候補 {stats['count']} 領域\n候補線の平均長 {mean}\n最小〜最大 {span}\n除外領域 {stats['excluded_regions']} 個\n{scale}\n※蚕の匹数・体長ではありません")
         self.items.delete(0, "end")
         n = 0

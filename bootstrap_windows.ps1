@@ -1,18 +1,15 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $kaikoPackage = Split-Path -Parent $PSScriptRoot
-$kaikoLocal = [Environment]::GetFolderPath('LocalApplicationData')
-$kaikoInstall = Join-Path $kaikoLocal 'KaikoChannel\SizeCheck'
-$kaikoRuntime = Join-Path $kaikoLocal 'KaikoChannel\Runtime\Python312'
-if ($env:KAIKO_INSTALL_ROOT) {
-    $kaikoInstall = $env:KAIKO_INSTALL_ROOT
-    $kaikoRuntime = Join-Path $kaikoInstall 'runtime\Python312'
-    $kaikoTemporary = Join-Path $kaikoInstall 'runtime\tmp'
-    New-Item -ItemType Directory -Force -Path $kaikoTemporary | Out-Null
-    $env:TEMP = $kaikoTemporary
-    $env:TMP = $kaikoTemporary
-    $env:TMPDIR = $kaikoTemporary
-}
+$kaikoInstall = $kaikoPackage
+if ($env:KAIKO_INSTALL_ROOT) { $kaikoInstall = $env:KAIKO_INSTALL_ROOT }
+$kaikoRuntime = Join-Path $kaikoInstall 'runtime\Python312'
+$kaikoCache = Join-Path $kaikoInstall 'runtime\Downloads'
+$kaikoTemporary = Join-Path $kaikoInstall 'runtime\tmp'
+New-Item -ItemType Directory -Force -Path $kaikoTemporary | Out-Null
+$env:TEMP = $kaikoTemporary
+$env:TMP = $kaikoTemporary
+$env:TMPDIR = $kaikoTemporary
 $kaikoLogs = Join-Path $kaikoInstall 'logs'
 New-Item -ItemType Directory -Force -Path $kaikoLogs | Out-Null
 $kaikoLog = Join-Path $kaikoLogs ('setup_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.txt')
@@ -56,7 +53,6 @@ try {
     if (-not $kaikoPython) {
         if (-not [Environment]::Is64BitOperatingSystem) { throw '64bit版のWindowsが必要です。' }
         Write-KaikoLog 'Python 3.12を公式サイトから取得しています。管理者として実行する必要はありません。'
-        $kaikoCache = Join-Path $kaikoLocal 'KaikoChannel\Runtime\Downloads'
         New-Item -ItemType Directory -Force -Path $kaikoCache | Out-Null
         $kaikoInstaller = Join-Path $kaikoCache 'python-3.12.10-amd64.exe'
         $kaikoExpected = '67B5635E80EA51072B87941312D00EC8927C4DB9BA18938F7AD2D27B328B95FB'
@@ -81,19 +77,6 @@ try {
     & $kaikoPython -I -X utf8 (Join-Path $PSScriptRoot 'bootstrap.py') --package-root $kaikoPackage --install-root $kaikoInstall --log-file $kaikoLog
     $kaikoCode = $LASTEXITCODE
     if ($kaikoCode -ne 0) { throw '準備を完了できませんでした。上の内容と記録を確認してください。' }
-    if (-not $env:KAIKO_INSTALL_ROOT) { try {
-        $kaikoDesktop = [Environment]::GetFolderPath('DesktopDirectory')
-        $kaikoShortcutPath = Join-Path $kaikoDesktop '蚕CHANNEL 体長チェック.lnk'
-        $kaikoShell = New-Object -ComObject WScript.Shell
-        $kaikoShortcut = $kaikoShell.CreateShortcut($kaikoShortcutPath)
-        $kaikoTarget = Join-Path $kaikoInstall '蚕チェック.bat'
-        if ((-not (Test-Path -LiteralPath $kaikoShortcutPath)) -or ($kaikoShortcut.TargetPath -eq $kaikoTarget)) {
-            $kaikoShortcut.TargetPath = $kaikoTarget
-            $kaikoShortcut.WorkingDirectory = $kaikoInstall
-            $kaikoShortcut.Description = '準備・更新・起動を自動で行います'
-            $kaikoShortcut.Save()
-        }
-    } catch { Write-KaikoLog 'デスクトップの項目は作成できませんでした。蚕チェック.batから起動できます。' } }
     exit 0
 } catch {
     Write-KaikoLog ('準備を完了できませんでした: ' + $_.Exception.Message)

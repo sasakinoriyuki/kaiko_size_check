@@ -1,25 +1,11 @@
 {
-  "schema": 1,
+  "version": "2026.11.09-instance1",
+  "release_sequence": 13,
   "channel": "school",
-  "auto_update": true,
-  "version": "2026.11.08-online1",
-  "release_sequence": 11,
-  "feed_url": "https://raw.githubusercontent.com/sasakinoriyuki/kaiko_size_check/school/.updates/channel.json",
-  "package": {
-    "schema": 1,
-    "release_sequence": 11,
-    "version": "2026.11.08-online1",
-    "minimum_bootstrap": 2,
-    "channel": "school",
-    "encoding": "base64",
-    "url": "https://raw.githubusercontent.com/sasakinoriyuki/kaiko_size_check/school/.updates/package_11_11194dd98b1b.b64",
-    "bytes": 332262,
-    "sha256": "11194dd98b1b0b65b9cc9620f0a75770fb53b1a86c764a6cfa118193467a56c8"
-  },
-  "validation": {
-    "unit_tests": 126,
-    "powershell_smoke": true,
-    "real_linux_gui_both_channels": true,
-    "windows_first_install_tested": false
-  }
+  "mode": "automatic_instance_estimates",
+  "model": "YOLOv8-DSRI pretrained + own texture veto",
+  "python": "X:\\python 3.12\\python.exe",
+  "storage": "portable",
+  "accuracy_notes": "ACCURACY.md",
+  "tests": 147
 }
