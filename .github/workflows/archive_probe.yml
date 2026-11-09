@@ -1,0 +1,39 @@
+name: Check free cloud access to silkworm archives
+on:
+  push:
+    branches: [main]
+    paths: ['automation/youtube_probe.py', '.github/workflows/archive_probe.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: archive-access-probe
+  cancel-in-progress: false
+jobs:
+  probe:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install public video metadata reader
+        run: python -m pip install --no-cache-dir --upgrade 'yt-dlp[default]'
+      - name: Check known videos and discover their channel
+        run: python automation/youtube_probe.py
+      - name: Save small diagnostic report without media or artifacts
+        run: |
+          git config user.name 'kaiko-archive-bot'
+          git config user.email 'kaiko-archive-bot@users.noreply.github.com'
+          git add -- .automation/youtube_probe.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record public YouTube archive access probe'
+            git push origin HEAD:main
+          fi
