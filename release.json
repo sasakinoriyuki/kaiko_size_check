@@ -1,10 +1,14 @@
 {
-  "version": "2026.11.09-instance1",
-  "release_sequence": 13,
+  "version": "2026.11.09-waiting1",
+  "release_sequence": 14,
   "channel": "parsonal",
   "mode": "automatic_instance_estimates",
   "model": "YOLOv8-DSRI pretrained + own texture veto",
   "storage": "portable",
   "accuracy_notes": "ACCURACY.md",
-  "tests": 147
+  "startup_fix": "No demo image or stale demo measurements while waiting for input",
+  "validation": {
+    "targeted_tests": 18,
+    "real_tk_empty_start_and_image_analysis": true
+  }
 }
