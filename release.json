@@ -1,8 +1,8 @@
 {
-  "version": "2026.11.09-segments1",
-  "release_sequence": 16,
+  "version": "2026.11.09-batch1",
+  "release_sequence": 17,
   "channel": "school",
-  "mode": "full_and_visible_segment_size_estimates",
+  "mode": "archive_collection_and_shared_engine_batch_analysis",
   "recognition_weights_unchanged": true,
   "storage": "portable",
   "headcount_csv": "data/counts.csv",
@@ -10,15 +10,19 @@
   "external_temperature_gui_integration": "deferred",
   "accuracy_notes": "ACCURACY.md",
   "validation": {
-    "unit_tests": 164,
-    "real_static_video_gui": true,
-    "separate_count_and_length_records": true,
-    "calibrated_mm_conversion": true,
-    "full_and_visible_lengths_separate": true,
-    "existing_records_preserved": true,
-    "both_channel_update_offline_gui": true,
-    "windows_first_install_executed": false
+    "unit_tests": 182,
+    "real_batch_gui": true,
+    "zip_reopen_and_resume": true,
+    "old_records_preserved": true,
+    "update_deferred_while_batch_running": true,
+    "windows_channel_download_executed": false,
+    "network_channel_download_in_this_environment": false
   },
   "python": "X:\\python 3.12\\python.exe",
-  "individual_size_csv": "data/individual_sizes.csv"
+  "individual_size_csv": "data/individual_sizes.csv",
+  "archive_output": "data/archive_batch",
+  "automatic_training": false,
+  "automatic_model_promotion": false,
+  "cloud_youtube_probe": "blocked_by_youtube_bot_check",
+  "automation_guide": "ARCHIVE_AUTOMATION.md"
 }
