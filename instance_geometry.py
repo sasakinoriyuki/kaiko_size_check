@@ -91,7 +91,8 @@ def measure_mask(mask, offset=(0,0), frame_shape=None, minimum_aspect=3.5):
     if main_area<10 or main_area/max(area,1)<.97:return candidate
     if frame_shape is not None:
         h,w=frame_shape[:2]
-        if x0+offset[0]<=1 or y0+offset[1]<=1 or x1+offset[0]>=w-1 or y1+offset[1]>=h-1:
+        margin=max(3,min(8,round(min(component.shape)*.12)))
+        if x0+offset[0]<=margin or y0+offset[1]<=margin or x1+offset[0]>=w-margin or y1+offset[1]>=h-margin:
             candidate.reason='edge';return candidate
     padded=np.pad(component,3)
     # Smooth at most one pixel. Large gaps and separate body fragments stay rejected.
@@ -121,6 +122,64 @@ def intersection(a,b):
     return int(np.logical_and(a['mask'][y0-ay:y1-ay,x0-ax:x1-ax],b['mask'][y0-by:y1-by,x0-bx:x1-bx]).sum())
 
 
+def contour_candidate(mask,offset=(0,0),reason='low_confidence'):
+    """Keep an uncertain detection without running expensive length geometry."""
+    binary=(np.asarray(mask)>0).astype(np.uint8)
+    contours,_=cv2.findContours(binary,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:return None
+    contour=max(contours,key=cv2.contourArea)+np.asarray(offset)
+    return Candidate(contour,None,None,reason)
+
+
+def counting_evidence(p):
+    return not p.get('reject_count',False) and (p.get('whole_score',0)>=.6 or p.get('small_score',0)>=.6
+            or p.get('detail_score',0)>=.85)
+
+
+def merge_views(proposals,frame_shape):
+    """Fuse repeated detections; keep a complete mask when another view is ragged.
+
+    Artificial tile-edge cuts must already have been excluded by the caller.
+    Masks are selected, never joined across a gap or across different animals.
+    """
+    groups=[]
+    for p in sorted(proposals,key=lambda p:p['score'],reverse=True):
+        area=int(np.count_nonzero(p['mask']))
+        if not area:continue
+        for group in groups:
+            anchor=group[0]
+            if intersection(p,anchor)/max(1,min(area,int(np.count_nonzero(anchor['mask']))))>.72:
+                group.append(p);break
+        else:groups.append([p])
+    result=[]
+    for group in groups:
+        whole=[p for p in group if p.get('source','whole')=='whole']
+        reference=max(whole or group,key=lambda p:p['score'])
+        baseline_area=np.count_nonzero(reference['mask'])
+        evidence={'whole_score':max([p['score'] for p in whole],default=0),
+                  'small_score':max([p['score'] for p in group if p.get('source')=='small_tile'],default=0),
+                  'detail_score':max([p['score'] for p in group if p.get('source')=='detail_tile'],default=0)}
+        chosen=reference;geometry=None
+        if counting_evidence(evidence):
+            geometry=measure_mask(reference['mask'],reference['offset'],frame_shape)
+            # A valid whole-view mask is retained. A new view may recover a
+            # previously rejected mask only when it has comparable support.
+            if geometry is None or geometry.length_px is None:
+                choices=[]
+                for p in group:
+                    if p is reference or p['score']<.6 or np.count_nonzero(p['mask'])<.8*baseline_area:continue
+                    c=measure_mask(p['mask'],p['offset'],frame_shape)
+                    if c is not None and c.length_px is not None:choices.append((p,c))
+                if choices:chosen,geometry=max(choices,key=lambda item:item[0]['score'])
+        if geometry is None:geometry=contour_candidate(chosen['mask'],chosen['offset'])
+        if geometry is None:continue
+        fused={**chosen,**evidence,'score':max(p['score'] for p in group),
+               'mask_score':chosen['score'],'geometry':geometry,'views':len(group)}
+        if geometry.reason in {'shape','short'}:fused['reject_count']=True
+        result.append(fused)
+    return sorted(result,key=lambda p:p['score'],reverse=True)
+
+
 def deduplicate(proposals):
     """Merge tile duplicates using masks, preserving nearby distinct bodies."""
     kept=[]
@@ -138,13 +197,21 @@ def deduplicate(proposals):
     return kept
 
 
-def measure_proposals(proposals,frame_shape):
-    proposals=deduplicate(proposals)
+def measure_proposals(proposals,frame_shape,*,merged=False):
+    proposals=proposals if merged else deduplicate(proposals)
     result=[]
     for i,p in enumerate(proposals):
-        c=measure_mask(p['mask'],p['offset'],frame_shape)
+        c=p.get('geometry') if merged else measure_mask(p['mask'],p['offset'],frame_shape)
         if c is None:continue
         c.confidence=float(p['score'])
+        if merged:
+            c.counted=counting_evidence(p)
+            c.count_reason='detector_consensus' if c.counted else 'low_confidence'
+            if not c.counted:
+                c.path=None;c.length_px=None;c.reason='low_confidence'
+        else:
+            c.counted=c.confidence>=.6
+            c.count_reason='detector' if c.counted else 'low_confidence'
         if c.path is not None and c.confidence<.6:
             c.path=None;c.length_px=None;c.reason='low_confidence'
         if c.path is not None:
@@ -152,6 +219,7 @@ def measure_proposals(proposals,frame_shape):
             endpoints=np.rint(c.path[[0,-1]]).astype(int)
             for j,other in enumerate(proposals):
                 if i==j:continue
+                if merged and not counting_evidence(other):continue
                 if intersection(p,other)/max(1,np.count_nonzero(p['mask']))>.04:
                     c.path=None;c.length_px=None;c.reason='overlap';break
                 ox,oy=other['offset'];mh,mw=other['mask'].shape

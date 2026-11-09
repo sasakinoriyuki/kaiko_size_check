@@ -252,7 +252,9 @@ class AIWorker:
         self.results = queue.Queue(maxsize=1)
         self.stopped = threading.Event()
         self.busy = False
-        self.thread = threading.Thread(target=self.run, daemon=True)
+        # Finish the current Torch call before interpreter teardown. A daemon
+        # thread can abort in C++ when the window closes during inference.
+        self.thread = threading.Thread(target=self.run, daemon=False)
         self.thread.start()
 
     def submit(self, job):

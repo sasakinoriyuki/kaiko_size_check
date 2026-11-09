@@ -9,7 +9,8 @@ import cv2
 import numpy as np
 
 from ai_measurement import content_view
-from instance_geometry import deduplicate,measure_mask,measure_proposals
+from instance_geometry import merge_views,measure_proposals
+from instance_counting import assign_instance_ids
 
 MODEL_URL='https://raw.githubusercontent.com/BillTheDing/YOLOv8-DSRI/18085596e7e950cac86b377807f05046c6b9a2cf/yolov8-main/YOLOv8-DSRI.pt'
 MODEL_SHA256='ddd6e7d9fb2911588f4e6d13fc78a2680f585c95ec13c1e651ba6b3197a8e217'
@@ -97,7 +98,7 @@ class LocalInstanceSegmenter:
         self.device='cuda' if torch.cuda.is_available() else 'cpu'
         self.model=load_detector(ensure_instance_model(model_path),self.device)
         self.model_sha256=MODEL_SHA256
-        self.metadata={'model_version':'DSRI instance + source-pixel geometry v1',
+        self.metadata={'model_version':'DSRI multi-view instances + visible counts v2',
                        'inference_threshold':.35,'pretrained':True,'model_source':'YOLOv8-DSRI / AGPL-3.0',
                        'measurement_status':'automatic_estimate','stages':'1-5; hatchling validation pending'}
         self.last_info={}
@@ -147,21 +148,28 @@ class LocalInstanceSegmenter:
         sizes=[max(p['mask'].shape) for p in proposals]
         small=len(proposals)<8 or (sizes and np.median(sizes)<150)
         detailed=getattr(settings,'ai_search','standard')=='fine'
-        if small or detailed:
-            side=384 if detailed and small else (512 if small else 896)
+        views=1
+        if small or detailed or max(view.shape[:2])>1152:
+            side=(384 if detailed else 512) if small else (896 if detailed else 1152)
             search=neutral_boost(view) if small else view
             for y in tile_positions(view.shape[0],side):
                 for x in tile_positions(view.shape[1],side):
                     patch=search[y:y+side,x:x+side]
                     original=view[y:y+side,x:x+side]
-                    for p in self.predict(patch,640,.25 if small else .35):
+                    views+=1
+                    for p in self.predict(patch,640 if small else 960,.25 if small else .35):
                         left,top,right,bottom=p['box']
-                        if min(left,top,patch.shape[1]-right,patch.shape[0]-bottom)<2:continue
+                        # Keep real frame-edge animals for counting; reject only
+                        # masks cut by an artificial interior tile boundary.
+                        h,w=patch.shape[:2]
+                        if ((left<2 and x>0) or (top<2 and y>0)
+                            or (right>w-2 and x+w<view.shape[1])
+                            or (bottom>h-2 and y+h<view.shape[0])):continue
                         if small:
                             sat=cv2.cvtColor(original[top:bottom,left:right],cv2.COLOR_BGR2HSV)[:,:,1]
                             if (sat[p['mask']>0]<110).mean()<.65:continue
                         p['offset']=(p['offset'][0]+x,p['offset'][1]+y)
-                        p['source']='small_tile' if small else 'tile'
+                        p['source']='small_tile' if small else 'detail_tile'
                         proposals.append(p)
         if small:
             # The grey-body enhancement also brightens leaf veins. The
@@ -177,18 +185,16 @@ class LocalInstanceSegmenter:
                 values=probability[y:y+h,x:x+w][p['mask']>0]
                 if len(values) and np.median(values)>=.5:guarded.append(p)
             proposals=guarded
-        filtered=[]
-        for p in proposals:
-            c=measure_mask(p['mask'],p['offset'],view.shape)
-            if c is None or c.reason=='shape':continue
-            filtered.append(p)
-        filtered=deduplicate(filtered)
-        candidates=measure_proposals(filtered,view.shape)
+        filtered=merge_views(proposals,view.shape)
+        candidates=measure_proposals(filtered,view.shape,merged=True)
         for c in candidates:
             c.contour=c.contour+np.asarray(offset)
             if c.path is not None:c.path=c.path+np.asarray(offset)
-        self.last_info={'effective_roi':list(effective),'small_body_search':bool(small or detailed),
+        counts=assign_instance_ids(candidates)
+        self.last_info={'effective_roi':list(effective),'small_body_search':bool(small),
                         'measurement_status':'automatic_estimate','detected_count':len(candidates),
                         'measurable_count':sum(c.length_px is not None for c in candidates),
-                        'confidence_threshold':.35}
+                        'confidence_threshold':.35,'inference_views':views,
+                        'count_thresholds':{'whole':.6,'small_with_texture_guard':.6,'detail_only':.85},
+                        **counts}
         return candidates,self.device
