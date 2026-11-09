@@ -1,14 +1,17 @@
 {
-  "version": "2026.11.09-waiting1",
-  "release_sequence": 14,
+  "version": "2026.11.09-count1",
+  "release_sequence": 15,
   "channel": "parsonal",
-  "mode": "automatic_instance_estimates",
-  "model": "YOLOv8-DSRI pretrained + own texture veto",
+  "mode": "visible_instance_counts_and_length_estimates",
+  "recognition_weights_unchanged": true,
   "storage": "portable",
+  "headcount_csv": "data/counts.csv",
+  "body_length_csv": "data/measurements.csv",
+  "external_temperature_gui_integration": "deferred",
   "accuracy_notes": "ACCURACY.md",
-  "startup_fix": "No demo image or stale demo measurements while waiting for input",
   "validation": {
-    "targeted_tests": 18,
-    "real_tk_empty_start_and_image_analysis": true
+    "unit_tests": 155,
+    "real_static_video_gui": true,
+    "separate_count_and_length_records": true
   }
 }

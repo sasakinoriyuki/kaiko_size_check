@@ -19,6 +19,7 @@ from PIL import Image, ImageTk
 
 from measurement import Settings, analyze, calibrate, channel_roi, demo_frame, polyline_length, summarize
 from ai_measurement import AIJob, AIWorker
+from instance_counting import count_summary
 
 BASE = Path(__file__).resolve().parent
 
@@ -82,7 +83,7 @@ class Capture:
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("蚕CHANNEL 体長チェック — " + ("学校用・" if os.environ.get('KAIKO_SCHOOL_MODE') == '1' else '') + "1〜5齢 自動計測・試験版")
+        root.title("蚕CHANNEL 頭数・体長チェック — " + ("学校用・" if os.environ.get('KAIKO_SCHOOL_MODE') == '1' else '') + "1〜5齢 自動解析・試験版")
         root.geometry("1380x930")
         root.minsize(1150, 800)
         self.capture = None
@@ -211,6 +212,8 @@ class App:
         ttk.Button(params, text="検出設定を適用", command=self.apply_settings).pack(side="left", padx=8)
         self.show_mask = tk.BooleanVar()
         ttk.Checkbutton(params, text="検出マスク表示", variable=self.show_mask, command=self.render).pack(side="left")
+        self.show_uncertain=tk.BooleanVar(value=False)
+        ttk.Checkbutton(params,text="要確認の候補も表示",variable=self.show_uncertain,command=self.render).pack(side="left",padx=6)
 
         self.status = tk.StringVar()
         ttk.Label(self.root, textvariable=self.status, padding=8, wraplength=1300).pack(fill="x")
@@ -232,7 +235,7 @@ class App:
         self.items = tk.Listbox(side, width=32, height=8)
         self.items.pack(fill="x", pady=10)
         self.items.bind("<<ListboxSelect>>", self.select_prompt)
-        ttk.Label(side, text="緑：自動体長の推定線\n橙：体長を保留した領域\n青：従来モデルの輪郭プレビュー\n番号は画面内の仮番号です。", wraplength=280).pack(anchor="w")
+        ttk.Label(side, text="番号：頭数に含めた個体\n緑：体長の推定線／橙：体長保留\n灰：頭数の要確認候補（切替表示）\n番号は画面内の仮番号です。", wraplength=280).pack(anchor="w")
         ttk.Label(side, text="平均長の推移（この起動内・測定できた個体）", wraplength=280).pack(anchor="w", pady=(16, 3))
         self.chart = tk.Canvas(side, width=280, height=150, bg="white", highlightthickness=0)
         self.chart.pack()
@@ -754,7 +757,7 @@ class App:
                                  if result.get(key) is not None} if job.backend.startswith('scratch') or job.backend == 'instance' else {})
         if job.backend == 'instance':
             self.last_model_info.update(result.get('measurement_info',{}))
-            self.last_model_info['instances'] = [{'confidence':getattr(c,'confidence',None),'length_px':c.length_px,'reason':c.reason} for c in result['candidates']]
+            self.last_model_info['instances'] = [{'id':c.instance_id,'counted':c.counted,'confidence':c.confidence,'count_reason':c.count_reason,'length_px':c.length_px,'reason':c.reason} for c in result['candidates']]
         self.candidates = result["candidates"]
         self.mask = result.get("preview_mask") if job.backend.startswith("scratch_preview") else None
         self.show_mask.set(False)
@@ -765,7 +768,7 @@ class App:
         if job.backend == 'instance':
             prefix = f"自動計測・推定（{result['device']}・{result['seconds']:.1f}秒）\n"
             self.publish_candidates('auto_instance_estimate',prefix,self.ai_mode == 'single')
-            self.tell(f"自動計測しました（{result['seconds']:.1f}秒）。緑：体長推定／橙：重なり・見切れ等で体長保留。基準未設定ではpx表示です。")
+            self.tell(f"頭数・体長を推定しました（{result['seconds']:.1f}秒）。番号付きは頭数に含めた個体。橙は頭数に含め、体長を保留しています。基準未設定ではpx表示です。")
             return
         method = "scratch_auto_candidate" if job.backend.startswith("scratch") else ("sam_fine_candidate" if fine else "sam_auto_candidate")
         if job.backend.startswith("scratch_preview"):
@@ -849,6 +852,29 @@ class App:
         self.candidates, self.mask = analyze(self.frame, self.settings, self.roi)
         self.publish_candidates()
 
+    def log_counts(self,counts):
+        """Separate count records from the existing CSV's length sample count."""
+        info=getattr(self,'last_model_info',{})
+        row={'timestamp':datetime.now().astimezone().isoformat(timespec='seconds'),
+             'series':self.series,'source':self.source,'video_seconds':self.position,
+             **counts,'model_version':info.get('model_version'),
+             'model_sha256':info.get('model_sha256'),
+             'resolution':f'{self.frame.shape[1]}x{self.frame.shape[0]}',
+             'effective_roi':json.dumps(info.get('effective_roi',self.roi)),
+             'count_settings':json.dumps(info.get('count_thresholds',{}))}
+        path=self.data/'counts.csv'
+        try:
+            header=not path.exists() or path.stat().st_size==0
+            with path.open('a',encoding='utf-8-sig',newline='') as f:
+                writer=csv.DictWriter(f,fieldnames=list(row))
+                if header:writer.writeheader()
+                writer.writerow(row)
+            return True
+        except OSError as exc:
+            self.io_error=str(exc)
+            self.tell('頭数CSVの保存に失敗しました。Excelで開いている場合は閉じてください。')
+            return False
+
     def publish_candidates(self, method="auto_candidate", prefix="", force_record=False):
         if method == "scratch_region_preview":
             self.result.set(prefix + "未確認の領域プレビュー\n青：モデルが選んだ領域\n大きな結合領域も表示しています\n体の一部・重なり・誤検出を含みます\n頭数・自動体長は計測しません\n体長は手動計測で確認できます")
@@ -865,22 +891,22 @@ class App:
         span = f"{stats['min']:.1f}〜{stats['max']:.1f} {unit}" if stats["count"] else "--"
         scale = "基準設定済み" if self.ppmm is not None else "基準未設定（px）"
         if method == 'auto_instance_estimate':
-            self.result.set(prefix + f"検出候補 {len(self.candidates)} 領域\n体長推定 {stats['count']} 匹分\n平均 {mean}\n最小〜最大 {span}\n体長保留 {stats['excluded_regions']} 領域\n{scale}\n見えている個体の参考値です")
+            counts=count_summary(self.candidates)
+            self.result.set(prefix + f"頭数推定 {counts['estimated_count']} 頭（画面内）\n頭数の要確認 {counts['uncertain_regions']} 候補\n体長推定 {counts['measured_count']} 匹分\n体長保留 {counts['unmeasured_count']} 頭\n平均 {mean}\n最小〜最大 {span}\n{scale}")
             self.items.delete(0,'end')
             reasons={'low_confidence':'検出の確信度不足','edge':'画面端','fragmented':'輪郭の欠け','branch':'輪郭の分岐','loop':'輪郭の重なり','overlap':'個体の重なり','overlap_at_end':'頭尾の重なり','shape':'形状確認','short':'小さすぎる','outside_mask':'中心線の確認'}
-            n=0
             for c in self.candidates:
-                if c.length_px is not None:
-                    n+=1
-                    self.items.insert('end',f"推定 {n:02d}   {c.length_px/(self.ppmm or 1):.1f} {unit}")
-            for c in self.candidates:
-                if c.length_px is None:self.items.insert('end','保留：'+reasons.get(c.reason,c.reason))
+                if not c.counted:continue
+                label=f'{c.instance_id:02d}' if c.instance_id is not None else '—'
+                detail=f'{c.length_px/(self.ppmm or 1):.1f} {unit}' if c.length_px is not None else '体長保留：'+reasons.get(c.reason,c.reason)
+                self.items.insert('end',f'個体 {label}   {detail}')
             stamp=datetime.now().astimezone().strftime('%H:%M:%S')
-            self.write_obs(f"蚕CHANNEL | 自動計測・推定 {stamp}\n体長平均 {mean}（{stats['count']}匹分）\n検出 {len(self.candidates)}領域・体長保留 {stats['excluded_regions']}\n{scale}")
+            self.write_obs(f"蚕CHANNEL | 自動計測・推定 {stamp}\n画面内の頭数推定 {counts['estimated_count']}頭\n体長平均 {mean}（{counts['measured_count']}匹分）\n頭数の要確認 {counts['uncertain_regions']}候補・体長保留 {counts['unmeasured_count']}頭\n{scale}")
             now=time.monotonic()
             if (force_record or (not self.paused and not self.ended and now-self.last_log>=10)) and not self.source.startswith('デモ'):
                 self.last_log=now
                 self.log(stats,method)
+                self.log_counts(counts)
                 self.history.append((now,stats['mean']));self.history=self.history[-600:]
             self.render()
             return
@@ -928,16 +954,26 @@ class App:
         if self.mode == "ai_point" and self.prompt_selected is not None:
             shown = [self.prompt_candidates[self.prompt_selected]]
         for c in shown:
+            instance_mode=self.selected_ai_engine()=='instance' and getattr(self,'ai_mode','off')!='off'
+            if instance_mode and not c.counted:
+                option=getattr(self,'show_uncertain',None)
+                if option is None or not option.get():continue
             color = ((230, 180, 30) if c.reason.startswith("semantic_preview") else
                      ((80, 220, 100) if c.length_px is not None else (0, 165, 255)))
+            if instance_mode and not c.counted:color=(140,140,140)
             cv2.drawContours(frame, [c.contour], -1, color, 1)
             if c.path is not None:
                 number += 1
                 pts = np.rint(c.path).astype(np.int32)
                 cv2.polylines(frame, [pts], False, (40, 250, 90), 2)
                 x, y = pts[len(pts) // 2]
-                cv2.putText(frame, str(number), (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, .65, (0, 0, 0), 3)
-                cv2.putText(frame, str(number), (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, .65, (80, 255, 110), 1)
+                label=str(c.instance_id if instance_mode and c.instance_id is not None else number)
+                cv2.putText(frame, label, (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, .65, (0, 0, 0), 3)
+                cv2.putText(frame, label, (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, .65, (80, 255, 110), 1)
+            elif instance_mode and c.counted and c.instance_id is not None:
+                x,y=c.contour.reshape(-1,2).mean(0).astype(int)
+                cv2.putText(frame,str(c.instance_id),(int(x),int(y)),cv2.FONT_HERSHEY_SIMPLEX,.65,(0,0,0),3)
+                cv2.putText(frame,str(c.instance_id),(int(x),int(y)),cv2.FONT_HERSHEY_SIMPLEX,.65,(0,200,255),1)
         if self.roi:
             cv2.rectangle(frame, self.roi[:2], self.roi[2:], (230, 180, 30), 2)
         if len(self.calibration_points) == 2:

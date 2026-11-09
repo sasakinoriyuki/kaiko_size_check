@@ -40,6 +40,10 @@ class Candidate:
     path: np.ndarray | None
     length_px: float | None
     reason: str
+    confidence: float | None = None
+    counted: bool = False
+    instance_id: int | None = None
+    count_reason: str = "unverified"
 
 
 def polyline_length(points):
