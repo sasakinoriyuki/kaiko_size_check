@@ -1,8 +1,8 @@
 {
-  "version": "2026.11.09-count1",
-  "release_sequence": 15,
+  "version": "2026.11.09-segments1",
+  "release_sequence": 16,
   "channel": "parsonal",
-  "mode": "visible_instance_counts_and_length_estimates",
+  "mode": "full_and_visible_segment_size_estimates",
   "recognition_weights_unchanged": true,
   "storage": "portable",
   "headcount_csv": "data/counts.csv",
@@ -10,8 +10,14 @@
   "external_temperature_gui_integration": "deferred",
   "accuracy_notes": "ACCURACY.md",
   "validation": {
-    "unit_tests": 155,
+    "unit_tests": 164,
     "real_static_video_gui": true,
-    "separate_count_and_length_records": true
-  }
+    "separate_count_and_length_records": true,
+    "calibrated_mm_conversion": true,
+    "full_and_visible_lengths_separate": true,
+    "existing_records_preserved": true,
+    "both_channel_update_offline_gui": true,
+    "windows_first_install_executed": false
+  },
+  "individual_size_csv": "data/individual_sizes.csv"
 }

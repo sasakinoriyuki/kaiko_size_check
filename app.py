@@ -20,6 +20,7 @@ from PIL import Image, ImageTk
 from measurement import Settings, analyze, calibrate, channel_roi, demo_frame, polyline_length, summarize
 from ai_measurement import AIJob, AIWorker
 from instance_counting import count_summary
+from visible_measurement import visible_segment_count
 
 BASE = Path(__file__).resolve().parent
 
@@ -235,7 +236,7 @@ class App:
         self.items = tk.Listbox(side, width=32, height=8)
         self.items.pack(fill="x", pady=10)
         self.items.bind("<<ListboxSelect>>", self.select_prompt)
-        ttk.Label(side, text="番号：頭数に含めた個体\n緑：体長の推定線／橙：体長保留\n灰：頭数の要確認候補（切替表示）\n番号は画面内の仮番号です。", wraplength=280).pack(anchor="w")
+        ttk.Label(side, text="番号：頭数に含めた個体\n緑：全長推定／黄点線：見える部分\n橙：全長保留／灰：頭数の要確認\n番号は画面内の仮番号です。", wraplength=280).pack(anchor="w")
         ttk.Label(side, text="平均長の推移（この起動内・測定できた個体）", wraplength=280).pack(anchor="w", pady=(16, 3))
         self.chart = tk.Canvas(side, width=280, height=150, bg="white", highlightthickness=0)
         self.chart.pack()
@@ -757,7 +758,7 @@ class App:
                                  if result.get(key) is not None} if job.backend.startswith('scratch') or job.backend == 'instance' else {})
         if job.backend == 'instance':
             self.last_model_info.update(result.get('measurement_info',{}))
-            self.last_model_info['instances'] = [{'id':c.instance_id,'counted':c.counted,'confidence':c.confidence,'count_reason':c.count_reason,'length_px':c.length_px,'reason':c.reason} for c in result['candidates']]
+            self.last_model_info['instances'] = [{'id':c.instance_id,'counted':c.counted,'confidence':c.confidence,'count_reason':c.count_reason,'length_px':c.length_px,'reason':c.reason,'visible_length_px':c.visible_length_px,'visible_note':c.visible_note} for c in result['candidates']]
         self.candidates = result["candidates"]
         self.mask = result.get("preview_mask") if job.backend.startswith("scratch_preview") else None
         self.show_mask.set(False)
@@ -768,7 +769,7 @@ class App:
         if job.backend == 'instance':
             prefix = f"自動計測・推定（{result['device']}・{result['seconds']:.1f}秒）\n"
             self.publish_candidates('auto_instance_estimate',prefix,self.ai_mode == 'single')
-            self.tell(f"頭数・体長を推定しました（{result['seconds']:.1f}秒）。番号付きは頭数に含めた個体。橙は頭数に含め、体長を保留しています。基準未設定ではpx表示です。")
+            self.tell(f"頭数・サイズを推定しました（{result['seconds']:.1f}秒）。緑は全長、黄点線は見える連続部分だけの参考値です。全長平均に可視部分は含めません。")
             return
         method = "scratch_auto_candidate" if job.backend.startswith("scratch") else ("sam_fine_candidate" if fine else "sam_auto_candidate")
         if job.backend.startswith("scratch_preview"):
@@ -875,6 +876,40 @@ class App:
             self.tell('頭数CSVの保存に失敗しました。Excelで開いている場合は閉じてください。')
             return False
 
+    def log_individual_sizes(self):
+        """Never write a visible segment into a full-length field or average."""
+        rows=[];scale=self.ppmm or 1;unit='mm' if self.ppmm is not None else 'px'
+        info=getattr(self,'last_model_info',{})
+        stamp=datetime.now().astimezone().isoformat(timespec='seconds')
+        for c in self.candidates:
+            if not c.counted:continue
+            status=('full_estimate' if c.length_px is not None else
+                    'visible_segment_estimate' if c.visible_length_px is not None else 'not_measurable')
+            rows.append({'timestamp':stamp,'series':self.series,'source':self.source,
+                         'video_seconds':self.position,'frame_instance_id':c.instance_id,
+                         'length_status':status,'unit':unit,
+                         'full_length':None if c.length_px is None else c.length_px/scale,
+                         'visible_segment_length':None if c.visible_length_px is None else c.visible_length_px/scale,
+                         'full_length_reason':c.reason,'visible_note':c.visible_note,
+                         'pixels_per_mm':self.ppmm,'confidence':c.confidence,
+                         'model_version':info.get('model_version'),'model_sha256':info.get('model_sha256')})
+        if not rows:return True
+        path=self.data/'individual_sizes.csv';fields=list(rows[0])
+        try:
+            header=not path.exists() or path.stat().st_size==0
+            if not header:
+                with path.open(encoding='utf-8-sig',newline='') as f:
+                    if next(csv.reader(f),None)!=fields:raise ValueError('個体サイズCSVの列が一致しません。')
+            with path.open('a',encoding='utf-8-sig',newline='') as f:
+                writer=csv.DictWriter(f,fieldnames=fields)
+                if header:writer.writeheader()
+                writer.writerows(rows)
+            return True
+        except (OSError,ValueError) as exc:
+            self.io_error=str(exc)
+            self.tell('個体サイズCSVの保存に失敗しました。Excelで開いている場合は閉じてください。')
+            return False
+
     def publish_candidates(self, method="auto_candidate", prefix="", force_record=False):
         if method == "scratch_region_preview":
             self.result.set(prefix + "未確認の領域プレビュー\n青：モデルが選んだ領域\n大きな結合領域も表示しています\n体の一部・重なり・誤検出を含みます\n頭数・自動体長は計測しません\n体長は手動計測で確認できます")
@@ -892,21 +927,25 @@ class App:
         scale = "基準設定済み" if self.ppmm is not None else "基準未設定（px）"
         if method == 'auto_instance_estimate':
             counts=count_summary(self.candidates)
-            self.result.set(prefix + f"頭数推定 {counts['estimated_count']} 頭（画面内）\n頭数の要確認 {counts['uncertain_regions']} 候補\n体長推定 {counts['measured_count']} 匹分\n体長保留 {counts['unmeasured_count']} 頭\n平均 {mean}\n最小〜最大 {span}\n{scale}")
+            partials=visible_segment_count(self.candidates)
+            self.result.set(prefix + f"頭数推定 {counts['estimated_count']} 頭（画面内）\n頭数の要確認 {counts['uncertain_regions']} 候補\n全長推定 {counts['measured_count']} 匹分\n全長保留 {counts['unmeasured_count']} 頭（可視部 {partials} 頭）\n全長平均 {mean}\n最小〜最大 {span}\n{scale}")
             self.items.delete(0,'end')
             reasons={'low_confidence':'検出の確信度不足','edge':'画面端','fragmented':'輪郭の欠け','branch':'輪郭の分岐','loop':'輪郭の重なり','overlap':'個体の重なり','overlap_at_end':'頭尾の重なり','shape':'形状確認','short':'小さすぎる','outside_mask':'中心線の確認'}
             for c in self.candidates:
                 if not c.counted:continue
                 label=f'{c.instance_id:02d}' if c.instance_id is not None else '—'
-                detail=f'{c.length_px/(self.ppmm or 1):.1f} {unit}' if c.length_px is not None else '体長保留：'+reasons.get(c.reason,c.reason)
+                detail=(f'全長 {c.length_px/(self.ppmm or 1):.1f} {unit}' if c.length_px is not None else
+                        f'可視部 {c.visible_length_px/(self.ppmm or 1):.1f} {unit}・全長不明' if c.visible_length_px is not None else
+                        '全長保留：'+reasons.get(c.reason,c.reason))
                 self.items.insert('end',f'個体 {label}   {detail}')
             stamp=datetime.now().astimezone().strftime('%H:%M:%S')
-            self.write_obs(f"蚕CHANNEL | 自動計測・推定 {stamp}\n画面内の頭数推定 {counts['estimated_count']}頭\n体長平均 {mean}（{counts['measured_count']}匹分）\n頭数の要確認 {counts['uncertain_regions']}候補・体長保留 {counts['unmeasured_count']}頭\n{scale}")
+            self.write_obs(f"蚕CHANNEL | 自動計測・推定 {stamp}\n画面内の頭数推定 {counts['estimated_count']}頭\n全長平均 {mean}（{counts['measured_count']}匹分）\n全長保留 {counts['unmeasured_count']}頭・可視部のみ {partials}頭\n頭数の要確認 {counts['uncertain_regions']}候補\n{scale}")
             now=time.monotonic()
             if (force_record or (not self.paused and not self.ended and now-self.last_log>=10)) and not self.source.startswith('デモ'):
                 self.last_log=now
                 self.log(stats,method)
                 self.log_counts(counts)
+                self.log_individual_sizes()
                 self.history.append((now,stats['mean']));self.history=self.history[-600:]
             self.render()
             return
@@ -971,7 +1010,12 @@ class App:
                 cv2.putText(frame, label, (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, .65, (0, 0, 0), 3)
                 cv2.putText(frame, label, (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, .65, (80, 255, 110), 1)
             elif instance_mode and c.counted and c.instance_id is not None:
-                x,y=c.contour.reshape(-1,2).mean(0).astype(int)
+                if c.visible_path is not None:
+                    pts=np.rint(c.visible_path).astype(np.int32)
+                    for start in range(0,len(pts)-1,20):
+                        cv2.polylines(frame,[pts[start:start+12]],False,(20,215,255),2)
+                    x,y=pts[len(pts)//2]
+                else:x,y=c.contour.reshape(-1,2).mean(0).astype(int)
                 cv2.putText(frame,str(c.instance_id),(int(x),int(y)),cv2.FONT_HERSHEY_SIMPLEX,.65,(0,0,0),3)
                 cv2.putText(frame,str(c.instance_id),(int(x),int(y)),cv2.FONT_HERSHEY_SIMPLEX,.65,(0,200,255),1)
         if self.roi:

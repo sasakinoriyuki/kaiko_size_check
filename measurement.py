@@ -44,6 +44,9 @@ class Candidate:
     counted: bool = False
     instance_id: int | None = None
     count_reason: str = "unverified"
+    visible_path: np.ndarray | None = None
+    visible_length_px: float | None = None
+    visible_note: str = ""
 
 
 def polyline_length(points):
