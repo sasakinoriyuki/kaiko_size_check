@@ -309,6 +309,7 @@ def run(source, root, log, profile=None, allow_online=True):
     setup_lock = FileLock(root/'_internal/data/.setup.lock')
     if not setup_lock.acquire(): log('別の画面で起動の準備が進んでいます。'); return 0
     staging = None
+    batch_lock = FileLock(root/'_internal/data/.batch.lock')
     try:
         package,manifest = select_package(source,root)
         # A stale downloaded launcher hands over to the installed newer one.
@@ -319,6 +320,11 @@ def run(source, root, log, profile=None, allow_online=True):
         if allow_online:
             staging = choose_online(package,max(sequence(manifest),previous.get('blocked_release_sequence',0)),root,log)
             if staging: package,manifest = staging,read_package(staging)
+        if package!=root and not batch_lock.acquire():
+            if not (root/'_internal/update_manifest.json').is_file():
+                raise SetupError('自動収集を停止してから、セットアップを再実行してください。')
+            package,manifest=root,read_package(root)
+            log('自動収集・解析が動いているため更新を次回へ見送ります。準備済みの版を起動します。')
         app_lock = FileLock(root/'_internal/data/.app.lock')
         if not app_lock.acquire():
             if package==root:
@@ -368,6 +374,7 @@ def run(source, root, log, profile=None, allow_online=True):
             else: raise
         return 0
     finally:
+        batch_lock.release()
         setup_lock.release()
         if staging: shutil.rmtree(staging,ignore_errors=True)
 

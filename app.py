@@ -119,6 +119,11 @@ class App:
         self.set_static(demo_frame(), self.source)
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(50, self.tick)
+        archive_config=self.data/'archive_batch/config.json'
+        try:
+            if archive_config.is_file() and json.loads(archive_config.read_text(encoding='utf-8')).get('auto_start'):
+                root.after(1000,self.start_archive_batch)
+        except (OSError,ValueError):pass
 
     def new_series(self):
         self.series = uuid.uuid4().hex[:12]
@@ -141,6 +146,7 @@ class App:
         ttk.Entry(top, textvariable=self.camera_index, width=4).pack(side="left")
         ttk.Button(top, text="カメラ接続", command=self.open_camera).pack(side="left", padx=5)
         ttk.Button(top, text="一時停止／再生・自動に戻る", command=self.toggle_pause).pack(side="left")
+        ttk.Button(top, text="アーカイブを自動収集・解析", command=self.start_archive_batch).pack(side="right")
 
         tools = ttk.Frame(self.root, padding=(8, 0))
         tools.pack(fill="x")
@@ -243,6 +249,16 @@ class App:
         ttk.Label(side, text="誤検出・見逃しは残ります。\n葉の下の個体は数えられません。\n同じ個体の成長率を表すグラフではありません。", wraplength=280).pack(anchor="w", pady=6)
         ttk.Label(self.root, text="体長は画像上の推定値です。葉・重なりで隠れた体は全長を確定できません。番号は画面内の仮番号です。", padding=8).pack(fill="x")
 
+    def start_archive_batch(self):
+        import subprocess
+        import sys
+        try:
+            subprocess.Popen([sys.executable,str(BASE/'archive_batch_ui.py'),'--storage-root',str(self.data.parent)],
+                             cwd=str(BASE),**({'creationflags':subprocess.CREATE_NO_WINDOW} if os.name=='nt' else {}))
+            self.tell('自動収集・解析の画面を開きました。「全アーカイブを自動処理」で開始します。')
+        except OSError as exc:
+            self.tell('自動収集・解析を起動できません：'+str(exc))
+
     def tell(self, text):
         self.status.set(text + (f"　保存エラー: {self.io_error}" if self.io_error else ""))
 
@@ -296,10 +312,17 @@ class App:
             self.tell("静止画です。基準線・測定範囲を指定できます。")
 
     def open_file(self):
-        name = filedialog.askopenfilename(filetypes=[("画像・録画", "*.png *.jpg *.jpeg *.bmp *.mp4 *.mkv *.avi *.mov"), ("すべて", "*.*")])
+        name = filedialog.askopenfilename(filetypes=[("画像・録画・検証ZIP", "*.png *.jpg *.jpeg *.bmp *.mp4 *.mkv *.avi *.mov *.zip"), ("すべて", "*.*")])
         if not name:
             return
-        if Path(name).suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}:
+        if Path(name).suffix.lower()=='.zip':
+            try:
+                from archive_batch import read_sample_zip
+                frame,_=read_sample_zip(name)
+            except Exception as exc:
+                messagebox.showerror('検証ZIPエラー',str(exc));return
+            self.set_static(frame,name)
+        elif Path(name).suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}:
             try:
                 frame = cv2.imdecode(np.fromfile(name, dtype=np.uint8), cv2.IMREAD_COLOR)
                 if frame is None:

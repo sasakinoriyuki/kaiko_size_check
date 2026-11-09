@@ -95,6 +95,18 @@ class YouTubeSampleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "YouTube"):
                 list(youtube_samples(url, yt_command=["yt-dlp"], ffmpeg_command=["ffmpeg"]))
 
+    def test_resume_does_not_download_or_decode_completed_sample_indices(self):
+        downloads=[];_,png=cv2.imencode('.png',np.zeros((25,40,3),np.uint8))
+        def run(command,**kwargs):
+            if '--dump-single-json' in command:return SimpleNamespace(returncode=0,stdout=json.dumps({'id':'RzZ0gH6DMF8','duration':100}).encode(),stderr=b'')
+            if '--download-sections' in command:
+                downloads.append(command[command.index('--download-sections')+1])
+                Path(command[command.index('-o')+1].replace('%(ext)s','mp4')).write_bytes(b'fixture')
+                return SimpleNamespace(returncode=0,stdout=b'',stderr=b'')
+            return SimpleNamespace(returncode=0,stdout=png.tobytes(),stderr=b'')
+        rows=list(youtube_samples('https://youtu.be/RzZ0gH6DMF8',count=5,skip_indices={1,2,3,4},runner=run,yt_command=['yt-dlp'],ffmpeg_command=['ffmpeg']))
+        self.assertEqual(len(downloads),1);self.assertEqual(rows[0][1]['sample_index'],5)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -81,7 +81,7 @@ def find_tool(name, runner=None):
 
 
 def _run(command, runner, timeout):
-    tool = 'yt-dlp' if 'yt_dlp' in command or 'yt-dlp' in Path(command[0]).name else 'ffmpeg'
+    tool = 'yt-dlp' if 'yt_dlp' in command or 'yt-dlp' in Path(command[0]).name else ('pip' if 'pip' in command else 'ffmpeg')
     try:
         result = runner(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=False, **_command_options())
     except subprocess.TimeoutExpired as exc:
@@ -99,7 +99,7 @@ def _run(command, runner, timeout):
     return result.stdout
 
 
-def youtube_samples(url, count=5, cancelled=None, runner=subprocess.run, yt_command=None, ffmpeg_command=None):
+def youtube_samples(url, count=5, cancelled=None, runner=subprocess.run, yt_command=None, ffmpeg_command=None, skip_indices=None):
     parsed = urlparse(url)
     if parsed.scheme not in {"https", "http"} or parsed.hostname not in {
             "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"} or parsed.username or parsed.password:
@@ -108,7 +108,7 @@ def youtube_samples(url, count=5, cancelled=None, runner=subprocess.run, yt_comm
         raise ValueError("抽出枚数は1〜20です。")
     yt = yt_command or find_tool("yt-dlp", runner=runner)
     ffmpeg = ffmpeg_command or find_tool("ffmpeg")
-    common = ["--ignore-config", "--no-playlist", "--no-warnings", "--no-progress",
+    common = ["--ignore-config", "--no-cache-dir", "--no-playlist", "--no-warnings", "--no-progress",
               "--socket-timeout", "20", "--retries", "2", "--fragment-retries", "2"]
     if IS_WINDOWS:
         deno = _local_candidates('deno')
@@ -127,10 +127,12 @@ def youtube_samples(url, count=5, cancelled=None, runner=subprocess.run, yt_comm
     video_id = str(info.get("id", "video"))
     # This is metadata only; the external title/ID never becomes a path or command.
     times = [duration*.5] if count == 1 else np.linspace(duration*.1, duration*.9, count)
-    with TemporaryDirectory(prefix="kaiko_youtube_") as folder:
+    with TemporaryDirectory(prefix="kaiko_youtube_",dir=os.environ.get('KAIKO_ARCHIVE_TEMP')) as folder:
         directory = Path(folder)
         cached = {}
         for index, target in enumerate(times, 1):
+            if index in (skip_indices or ()):
+                continue
             if cancelled is not None and cancelled.is_set():
                 raise ValueError("画像の準備を中止しました。")
             start = max(0., min(float(target)-1., max(0., duration-3.)))
@@ -159,6 +161,7 @@ def youtube_samples(url, count=5, cancelled=None, runner=subprocess.run, yt_comm
             if image is None:
                 raise RuntimeError("取得した区間から画像を読み込めませんでした。")
             yield image, {"source_file": "youtube_archive", "source_kind": "youtube_archive",
+                          "sample_index": index, "requested_count": count,
                           "video_id": video_id, "video_url": url, "video_title": str(info.get("title", "")),
                           "requested_video_seconds": float(target),
                           "requested_section_start": section[0], "requested_section_end": section[1],
