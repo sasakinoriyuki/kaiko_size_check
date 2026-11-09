@@ -49,8 +49,8 @@ def main(on_ready=None):
             app.reset_source(label);app.frame=image;app.render()
             root.after(150,app.start_ai_once)
         else:
+            app.reset_source('映像未選択')
             app.paused=True
-            app.candidates=[];app.mask=None
             app.result.set('画像・録画またはカメラを選んでください。\n体長の測定値なし')
             app.tell('準備できました。「画像／録画を開く」または「カメラ接続」から使えます。')
             app.render()

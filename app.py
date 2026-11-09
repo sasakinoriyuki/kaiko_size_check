@@ -908,6 +908,11 @@ class App:
             return
         self.canvas.delete("all")
         if self.frame is None:
+            self.canvas.create_text(max(320,self.canvas.winfo_width())/2,
+                                    max(240,self.canvas.winfo_height())/2,
+                                    text="映像待ち\n\n左上の『画像／録画を開く』か\n『カメラ接続』を押してください。\n\n現在の測定値はありません。",
+                                    fill="#e7efeb",font=("Yu Gothic UI",18),justify="center",
+                                    width=max(280,self.canvas.winfo_width()-50))
             self.draw_chart()
             return
         frame = self.frame.copy()
