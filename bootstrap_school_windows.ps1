@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $kaikoPackage = Split-Path -Parent $PSScriptRoot
 $kaikoInstall = $kaikoPackage

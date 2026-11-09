@@ -1,26 +1,10 @@
 {
-  "schema": 1,
+  "version": "2026.11.09-instance1",
+  "release_sequence": 13,
   "channel": "parsonal",
-  "auto_update": true,
-  "version": "2026.11.08-online2",
-  "release_sequence": 12,
-  "feed_url": "https://raw.githubusercontent.com/sasakinoriyuki/kaiko_size_check/parsonal/.updates/channel.json",
-  "package": {
-    "schema": 1,
-    "release_sequence": 12,
-    "version": "2026.11.08-online2",
-    "minimum_bootstrap": 2,
-    "channel": "parsonal",
-    "encoding": "base64",
-    "url": "https://raw.githubusercontent.com/sasakinoriyuki/kaiko_size_check/parsonal/.updates/package_12_f2612123d490.b64",
-    "bytes": 332829,
-    "sha256": "f2612123d490338ef0173e91af70be7fd15a148655201550219bf73e7ced210a"
-  },
-  "validation": {
-    "unit_tests": 126,
-    "powershell_smoke": true,
-    "real_linux_gui_both_channels": true,
-    "windows_first_install_tested": false,
-    "home_setup_paths_verified": true
-  }
+  "mode": "automatic_instance_estimates",
+  "model": "YOLOv8-DSRI pretrained + own texture veto",
+  "storage": "portable",
+  "accuracy_notes": "ACCURACY.md",
+  "tests": 147
 }

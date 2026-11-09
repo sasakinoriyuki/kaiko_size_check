@@ -237,7 +237,7 @@ class AIJob:
 
 class AIWorker:
     """One job at a time. Never run Torch or touch Tk widgets on the UI thread."""
-    def __init__(self, factory=LocalSegmenter, scratch_factory=None, texture_factory=None, texture_previous_factory=None):
+    def __init__(self, factory=LocalSegmenter, scratch_factory=None, texture_factory=None, texture_previous_factory=None, instance_factory=None):
         self.factory = factory
         self.engine = None
         self.scratch_factory = scratch_factory
@@ -246,6 +246,8 @@ class AIWorker:
         self.texture_engine = None
         self.texture_previous_factory = texture_previous_factory
         self.texture_previous_engine = None
+        self.instance_factory = instance_factory
+        self.instance_engine = None
         self.jobs = queue.Queue(maxsize=1)
         self.results = queue.Queue(maxsize=1)
         self.stopped = threading.Event()
@@ -276,9 +278,18 @@ class AIWorker:
                 continue
             start = time.monotonic()
             try:
-                if job.backend not in {"mobile_sam", "scratch", "scratch_preview", "scratch_preview_v6"}:
+                if job.backend not in {"instance", "mobile_sam", "scratch", "scratch_preview", "scratch_preview_v6"}:
                     raise ValueError("不明な解析方式です。")
-                if job.backend.startswith("scratch_preview"):
+                if job.backend == "instance":
+                    if job.prompt_points is not None:
+                        raise ValueError("自動計測は点の指定を使いません。画像・カメラを開いてください。")
+                    if self.instance_engine is None:
+                        if self.instance_factory is None:
+                            from instance_detector import LocalInstanceSegmenter
+                            self.instance_factory = LocalInstanceSegmenter
+                        self.instance_engine = self.instance_factory()
+                    engine = self.instance_engine
+                elif job.backend.startswith("scratch_preview"):
                     if job.prompt_points is not None:
                         raise ValueError("輪郭確認モデルは手動の点解析には対応していません。")
                     if job.backend == "scratch_preview_v6":
@@ -319,10 +330,12 @@ class AIWorker:
                           "seconds": time.monotonic()-start, "error": None}
                 if job.backend.startswith("scratch_preview"):
                     result["preview_mask"] = getattr(engine, 'last_preview_mask', None)
-                if job.backend.startswith("scratch"):
+                if job.backend.startswith("scratch") or job.backend == "instance":
                     result["model_version"] = getattr(engine, "metadata", {}).get("model_version")
                     result["inference_threshold"] = getattr(engine, "metadata", {}).get("inference_threshold", .5)
                     result["model_sha256"] = getattr(engine, "model_sha256", None)
+                if job.backend == "instance":
+                    result['measurement_info'] = dict(getattr(engine,'last_info',{}))
             except Exception as exc:
                 result = {"job": job, "error": str(exc) or type(exc).__name__}
             if not self.stopped.is_set():

@@ -27,7 +27,7 @@ def local_reference(base):
             with Image.open(io.BytesIO(raw)) as probe:
                 if probe.width*probe.height>20_000_000: continue
             image = cv2.imdecode(np.frombuffer(raw,np.uint8),cv2.IMREAD_COLOR)
-            if image is not None: return image,'保存済みの画像（輪郭確認）'
+            if image is not None: return image,'保存済みの画像（自動計測）'
         except (OSError,ValueError,BadZipFile,RuntimeError,Image.DecompressionBombError,cv2.error):
             continue
     # Compatibility with older local packages; new distributions contain no photos.
@@ -45,7 +45,7 @@ def main(on_ready=None):
         app=App(root)
         image,label=local_reference(app.data.parent)
         if image is not None:
-            app.ai_engine_choice.set('自作輪郭（比較）')
+            app.ai_engine_choice.set('自動計測（1〜5齢）')
             app.reset_source(label);app.frame=image;app.render()
             root.after(150,app.start_ai_once)
         else:
