@@ -11,6 +11,7 @@ import numpy as np
 from ai_measurement import content_view
 from instance_geometry import merge_views,measure_proposals
 from instance_counting import assign_instance_ids
+from visible_measurement import estimate_visible_segments,visible_segment_count
 
 MODEL_URL='https://raw.githubusercontent.com/BillTheDing/YOLOv8-DSRI/18085596e7e950cac86b377807f05046c6b9a2cf/yolov8-main/YOLOv8-DSRI.pt'
 MODEL_SHA256='ddd6e7d9fb2911588f4e6d13fc78a2680f585c95ec13c1e651ba6b3197a8e217'
@@ -98,7 +99,7 @@ class LocalInstanceSegmenter:
         self.device='cuda' if torch.cuda.is_available() else 'cpu'
         self.model=load_detector(ensure_instance_model(model_path),self.device)
         self.model_sha256=MODEL_SHA256
-        self.metadata={'model_version':'DSRI multi-view instances + visible counts v2',
+        self.metadata={'model_version':'DSRI instances + separate visible-segment lengths v3',
                        'inference_threshold':.35,'pretrained':True,'model_source':'YOLOv8-DSRI / AGPL-3.0',
                        'measurement_status':'automatic_estimate','stages':'1-5; hatchling validation pending'}
         self.last_info={}
@@ -187,14 +188,18 @@ class LocalInstanceSegmenter:
             proposals=guarded
         filtered=merge_views(proposals,view.shape)
         candidates=measure_proposals(filtered,view.shape,merged=True)
+        estimate_visible_segments(filtered,candidates)
         for c in candidates:
             c.contour=c.contour+np.asarray(offset)
             if c.path is not None:c.path=c.path+np.asarray(offset)
+            if c.visible_path is not None:c.visible_path=c.visible_path+np.asarray(offset)
         counts=assign_instance_ids(candidates)
         self.last_info={'effective_roi':list(effective),'small_body_search':bool(small),
                         'measurement_status':'automatic_estimate','detected_count':len(candidates),
                         'measurable_count':sum(c.length_px is not None for c in candidates),
                         'confidence_threshold':.35,'inference_views':views,
                         'count_thresholds':{'whole':.6,'small_with_texture_guard':.6,'detail_only':.85},
+                        'visible_segment_count':visible_segment_count(candidates),
+                        'visible_segment_policy':'longest_continuous_piece; full-length means exclude partials',
                         **counts}
         return candidates,self.device
