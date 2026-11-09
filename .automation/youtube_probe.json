@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "checked_at": "2026-11-09T13:51:28.780684+00:00",
+  "status": "unavailable",
+  "channel_id": null,
+  "attempts": [
+    {
+      "video_id": "0rijis5y8c0",
+      "error": "ERROR: [youtube] 0rijis5y8c0: Sign in to confirm you’re not a bot. This helps protect our community. Use --cookies-from-browser or --cookies for the authentication. See  [URL]  for how to manually pass cookies. Also see  [URL]  for tips on effectively exporting YouTube cookies"
+    },
+    {
+      "video_id": "RzZ0gH6DMF8",
+      "error": "ERROR: [youtube] RzZ0gH6DMF8: Sign in to confirm you’re not a bot. This helps protect our community. Use --cookies-from-browser or --cookies for the authentication. See  [URL]  for how to manually pass cookies. Also see  [URL]  for tips on effectively exporting YouTube cookies"
+    },
+    {
+      "video_id": "pbcVIyIBjig",
+      "error": "ERROR: [youtube] pbcVIyIBjig: Sign in to confirm you’re not a bot. This helps protect our community. Use --cookies-from-browser or --cookies for the authentication. See  [URL]  for how to manually pass cookies. Also see  [URL]  for tips on effectively exporting YouTube cookies"
+    }
+  ],
+  "cookie_access": false,
+  "media_downloaded": false
+}
