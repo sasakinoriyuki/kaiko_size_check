@@ -337,7 +337,8 @@ class AIWorker:
                     result["inference_threshold"] = getattr(engine, "metadata", {}).get("inference_threshold", .5)
                     result["model_sha256"] = getattr(engine, "model_sha256", None)
                 if job.backend == "instance":
-                    result['measurement_info'] = dict(getattr(engine,'last_info',{}))
+                    result['measurement_info'] = {**getattr(engine,'metadata',{}),
+                                                  **getattr(engine,'last_info',{})}
             except Exception as exc:
                 result = {"job": job, "error": str(exc) or type(exc).__name__}
             if not self.stopped.is_set():

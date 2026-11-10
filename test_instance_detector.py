@@ -66,7 +66,8 @@ class InstanceTests(unittest.TestCase):
 
     def test_worker_routes_instance_model_and_returns_provenance(self):
         class Engine:
-            metadata={'model_version':'test-instance','inference_threshold':.35}
+            metadata={'model_version':'test-instance','inference_threshold':.35,
+                      'texture_veto_sha256':'a'*64}
             model_sha256='test';last_info={'detected_count':1,'measurement_status':'automatic_estimate'}
             def analyze(self,*args):return [],'test'
         worker=AIWorker(instance_factory=Engine)
@@ -76,6 +77,7 @@ class InstanceTests(unittest.TestCase):
             while result is None and time.monotonic()<until:time.sleep(.01);result=worker.receive()
             self.assertIsNone(result['error']);self.assertEqual(result['measurement_info']['measurement_status'],'automatic_estimate')
             self.assertEqual(result['model_version'],'test-instance')
+            self.assertEqual(result['measurement_info']['texture_veto_sha256'],'a'*64)
         finally:worker.close()
 
     def test_static_image_automatically_starts_measurement_without_manual_trace(self):

@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 
 from archive_batch import ArchiveBatch,Cancelled,CommandRunner,list_archives,youtube_target,append_row,read_sample_zip
+from archive_batch import analysis_fingerprint,LEGACY_TEXTURE_VETO_SHA256
 from instance_geometry import measure_proposals
 from instance_counting import assign_instance_ids
 from archive_history import completion_key,load_completion_keys
@@ -141,6 +142,40 @@ class BatchTests(unittest.TestCase):
             r=ArchiveBatch(folder,e,extractor=forbidden).run(count=1,entries=entries())
             self.assertEqual(r['saved_images'],1);self.assertEqual(e.calls,2)
             self.assertEqual(r['reused_images'],1);self.assertEqual(r['downloaded_images'],0)
+
+    def test_same_bundled_texture_keeps_existing_completed_analysis(self):
+        with tempfile.TemporaryDirectory() as folder:
+            e=Engine();old=ArchiveBatch(folder,e,extractor=extraction)
+            old.run(count=1,entries=entries())
+            e.metadata={**e.metadata,'texture_veto_sha256':LEGACY_TEXTURE_VETO_SHA256}
+            self.assertEqual(analysis_fingerprint(e),old.fingerprint)
+            def forbidden(*a,**k):self.fail('unchanged texture downloaded or recomputed a source')
+            result=ArchiveBatch(folder,e,extractor=forbidden).run(count=1,entries=entries())
+            self.assertEqual(result['skipped_completed'],1);self.assertEqual(e.calls,1)
+
+    def test_changed_texture_reanalyzes_cached_pixels_without_downloading(self):
+        with tempfile.TemporaryDirectory() as folder:
+            e=Engine();ArchiveBatch(folder,e,extractor=extraction).run(count=1,entries=entries())
+            e.metadata={**e.metadata,'texture_veto_sha256':'a'*64}
+            def forbidden(*a,**k):self.fail('texture update redownloaded source pixels')
+            result=ArchiveBatch(folder,e,extractor=forbidden).run(count=1,entries=entries())
+            self.assertEqual(e.calls,2);self.assertEqual(result['reused_images'],1)
+            self.assertEqual(result['downloaded_images'],0)
+            result=ArchiveBatch(folder,e,extractor=forbidden).run(count=1,entries=entries())
+            self.assertEqual(result['skipped_completed'],1);self.assertEqual(e.calls,2)
+            with Path(folder,'results.csv').open(encoding='utf-8-sig',newline='') as f:
+                rows=list(csv.DictReader(f))
+            self.assertEqual(len(rows),2)
+            self.assertEqual(rows[0]['source_sha256'],rows[1]['source_sha256'])
+
+    def test_school_receipts_still_skip_sources_after_texture_update(self):
+        with tempfile.TemporaryDirectory() as folder:
+            e=Engine();e.metadata={**e.metadata,'texture_veto_sha256':'a'*64}
+            def forbidden(*a,**k):self.fail('new veto redownloaded completed home sources on school PC')
+            result=ArchiveBatch(folder,e,extractor=forbidden,
+                                completed_keys={completion_key(VIDEO,5)}).run(count=5,entries=entries())
+            self.assertEqual(e.calls,0);self.assertEqual(result['skipped_completed'],1)
+            self.assertEqual(result['downloaded_images'],0)
 
     def test_school_can_skip_returned_completion_history_without_local_images(self):
         with tempfile.TemporaryDirectory() as folder:
