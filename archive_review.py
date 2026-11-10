@@ -108,7 +108,11 @@ def read_examples(folder,cancelled=None):
                 examples.append(Example(row,path,infer_instar(title),title[:1000]))
         except (OSError,ValueError,KeyError,RuntimeError,BadZipFile):
             skipped.append({'sample_id':sid,'reason':'unreadable_or_mismatched_metadata'})
-    return examples,skipped
+    # Batch reanalysis appends a new result for the same original pixels. Keep
+    # the most recently appended valid analysis for review; earlier rows and
+    # source ZIPs remain untouched and available as historical comparisons.
+    latest={e.source_hash:e for e in examples}
+    return list(latest.values()),skipped
 
 
 def select_examples(examples,limit=100):

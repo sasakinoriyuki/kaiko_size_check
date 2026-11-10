@@ -151,6 +151,33 @@ class ReviewExportTests(unittest.TestCase):
             altered={**item,'estimated_count':'4'};write_csv(folder,[item,altered])
             with self.assertRaisesRegex(ValueError,'一致'):read_examples(folder)
 
+    def test_model_update_review_prefers_latest_result_for_the_same_original(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder=Path(folder);old=fixture(folder,1,count=0,full=0);new=fixture(folder,2)
+            with ZipFile(folder/old['sample_zip']) as archive:original=archive.read('source.png')
+            new['source_sha256']=old['source_sha256'];new['model_version']='updated-veto'
+            info={'sample_id':new['sample_id'],'source_sha256':new['source_sha256'],
+                  'collection':{'video_title':'蚕1齢 飼育'},'model_info':{'model_version':'updated-veto'}}
+            with ZipFile(folder/new['sample_zip'],'w') as archive:
+                archive.writestr('source.png',original);archive.writestr('source.json',json.dumps(info))
+            write_csv(folder,[old,new]);before={p:p.read_bytes() for p in folder.rglob('*') if p.is_file()}
+            examples,skipped=read_examples(folder)
+            self.assertFalse(skipped);self.assertEqual([e.sid for e in examples],[new['sample_id']])
+            packs=make_review_exports(folder)
+            with ZipFile(packs[0]) as archive:
+                sources=[name for name in archive.namelist() if name.startswith('samples/')]
+                self.assertEqual(sources,[new['sample_zip']])
+                self.assertEqual(archive.read('results.csv'),before[folder/'results.csv'])
+            self.assertTrue(all(p.read_bytes()==raw for p,raw in before.items()))
+
+    def test_missing_latest_export_can_fall_back_to_an_older_available_original(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder=Path(folder);old=fixture(folder,1);new=fixture(folder,2)
+            new['source_sha256']=old['source_sha256'];(folder/new['sample_zip']).unlink()
+            write_csv(folder,[old,new]);examples,skipped=read_examples(folder)
+            self.assertEqual([e.sid for e in examples],[old['sample_id']])
+            self.assertEqual(skipped[0]['sample_id'],new['sample_id'])
+
     def test_partly_appended_final_csv_row_is_not_misread_as_a_saved_sample(self):
         with tempfile.TemporaryDirectory() as folder:
             folder=Path(folder);item=fixture(folder,1);write_csv(folder,[item])

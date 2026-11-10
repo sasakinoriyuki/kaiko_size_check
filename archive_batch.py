@@ -197,6 +197,20 @@ def read_sample_zip(path):
     return image,info
 
 
+# Prior signed packages used this own v7 texture model but recorded only the
+# instance detector in their analysis identity. Preserve those completed keys
+# for the same weights; a different veto must reanalyze cached source pixels.
+LEGACY_TEXTURE_VETO_SHA256='81d7b352a9b8b2b44f3e071c6b503c797fdf25571fa23b66480662f56eb0cf2c'
+
+
+def analysis_fingerprint(engine):
+    value=str(engine.metadata.get('model_version'))+str(engine.model_sha256)
+    texture=engine.metadata.get('texture_veto_sha256')
+    if texture and texture!=LEGACY_TEXTURE_VETO_SHA256:
+        value+='|texture-veto:'+str(texture)
+    return hashlib.sha256(value.encode()).hexdigest()[:16]
+
+
 class ArchiveBatch:
     def __init__(self,folder,engine,*,extractor=youtube_samples,runner=subprocess.run,
                  cancelled=None,log=None,max_bytes=10*1024**3,yt_command=None,ffmpeg_command=None,completed_keys=None):
@@ -207,7 +221,7 @@ class ArchiveBatch:
         self.state_path=self.folder/'state.json'
         self.state=json.loads(self.state_path.read_text(encoding='utf-8')) if self.state_path.exists() else {'schema':1,'channels':{},'videos':{}}
         if self.state.get('schema')!=1:raise ValueError('一括解析の記録形式が未対応です。')
-        self.fingerprint=hashlib.sha256((str(engine.metadata.get('model_version'))+str(engine.model_sha256)).encode()).hexdigest()[:16]
+        self.fingerprint=analysis_fingerprint(engine)
         self.completed_keys=(load_completion_keys() if completed_keys is None else set(completed_keys)) | set(self.state.get('completed_collection_keys',[]))
         self.state['completed_collection_keys']=sorted(self.completed_keys)
 
@@ -265,7 +279,8 @@ class ArchiveBatch:
         if output.exists() and receipt.exists():return json.loads(receipt.read_text(encoding='utf-8'))
         self.log(f'{video_id}：画像 {index}/{count} を解析しています。')
         candidates,device=self.engine.analyze(image,Settings())
-        info={**self.engine.metadata,**self.engine.last_info,'model_sha256':self.engine.model_sha256,'device':device}
+        info={**self.engine.metadata,**self.engine.last_info,'model_sha256':self.engine.model_sha256,
+              'analysis_fingerprint':self.fingerprint,'device':device}
         info['instances']=[{'id':c.instance_id,'counted':c.counted,'confidence':c.confidence,
                            'count_reason':c.count_reason,'length_px':c.length_px,'reason':c.reason,
                            'visible_length_px':c.visible_length_px,'visible_note':c.visible_note,

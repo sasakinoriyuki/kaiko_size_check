@@ -105,6 +105,8 @@ class LocalInstanceSegmenter:
         self.last_info={}
         self.texture_model_path=Path(texture_model_path) if texture_model_path else Path(__file__).parent/'models/kaiko_texture.pt'
         self.texture_model=None
+        self.metadata['texture_veto_sha256']=(hashlib.sha256(self.texture_model_path.read_bytes()).hexdigest()
+                                              if self.texture_model_path.is_file() else None)
 
     def predict(self,frame,size=960,confidence=.35):
         import torch
