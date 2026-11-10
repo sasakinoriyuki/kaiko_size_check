@@ -7,6 +7,7 @@ import argparse
 from dataclasses import asdict
 from datetime import datetime, timezone
 import csv
+from fractions import Fraction
 import hashlib
 import io
 import json
@@ -26,6 +27,7 @@ import numpy as np
 
 from collect_youtube_samples import find_tool, youtube_samples, _run
 from measurement import Settings
+from archive_history import completion_key,load_completion_keys
 
 SEED_VIDEOS = ['0rijis5y8c0', 'RzZ0gH6DMF8', 'pbcVIyIBjig']
 VIDEO = re.compile(r'^[A-Za-z0-9_-]{11}$')
@@ -34,6 +36,11 @@ CSV_FIELDS = ['sample_id', 'video_id', 'requested_video_seconds', 'unit',
               'estimated_count', 'full_length_count', 'full_length_mean',
               'visible_segment_count', 'uncertain_regions', 'review_reasons',
               'sample_zip', 'source_sha256', 'model_version', 'model_sha256']
+
+
+def sample_fraction(index,count):
+    if not 1<=index<=count<=20:raise ValueError('画像の抽出位置が不正です。')
+    return Fraction(1,2) if count==1 else Fraction(1,10)+Fraction(4*(index-1),5*(count-1))
 
 
 class Cancelled(Exception):
@@ -192,7 +199,7 @@ def read_sample_zip(path):
 
 class ArchiveBatch:
     def __init__(self,folder,engine,*,extractor=youtube_samples,runner=subprocess.run,
-                 cancelled=None,log=None,max_bytes=10*1024**3,yt_command=None,ffmpeg_command=None):
+                 cancelled=None,log=None,max_bytes=10*1024**3,yt_command=None,ffmpeg_command=None,completed_keys=None):
         self.folder=Path(folder);self.folder.mkdir(parents=True,exist_ok=True)
         self.engine=engine;self.extractor=extractor;self.runner=runner
         self.cancelled=cancelled or threading.Event();self.log=log or (lambda message:None)
@@ -201,8 +208,44 @@ class ArchiveBatch:
         self.state=json.loads(self.state_path.read_text(encoding='utf-8')) if self.state_path.exists() else {'schema':1,'channels':{},'videos':{}}
         if self.state.get('schema')!=1:raise ValueError('一括解析の記録形式が未対応です。')
         self.fingerprint=hashlib.sha256((str(engine.metadata.get('model_version'))+str(engine.model_sha256)).encode()).hexdigest()[:16]
+        self.completed_keys=(load_completion_keys() if completed_keys is None else set(completed_keys)) | set(self.state.get('completed_collection_keys',[]))
+        self.state['completed_collection_keys']=sorted(self.completed_keys)
 
     def checkpoint(self):atomic_json(self.state_path,self.state)
+
+    def cached_samples(self,video_id,count):
+        """Locate source pixels independently of the model which analyzed them."""
+        cached={};was_completed=False
+        target_slots={sample_fraction(i,count):str(i) for i in range(1,count+1)}
+        for key,item in self.state['videos'].items():
+            pieces=key.split(':')
+            if len(pieces)!=3 or pieces[0]!=video_id:continue
+            old_count=int(pieces[1])
+            was_completed=was_completed or (old_count==count and item.get('status')=='done')
+            for slot,sid in item.get('samples',{}).items():
+                if not str(slot).isdigit() or not 1<=int(slot)<=old_count<=20 or not re.fullmatch('[a-f0-9]{24}',sid):
+                    raise ValueError('保存済み画像の再開記録が不正です。')
+                target=target_slots.get(sample_fraction(int(slot),old_count))
+                if target is None:continue
+                path=self.folder/'samples'/(sid+'.zip')
+                if path.is_symlink():raise ValueError('保存済み画像がリンク先へ変更されています。')
+                if path.is_file():cached[target]=sid
+        return cached,was_completed
+
+    def source_images(self,entry,count,done,cached):
+        """Read cached original PNGs first, then fetch only truly missing slots."""
+        skipped={int(slot) for slot in done}
+        for slot,sid in sorted(cached.items(),key=lambda item:int(item[0])):
+            if int(slot) in skipped:continue
+            if self.cancelled.is_set():raise Cancelled('中止しました。')
+            image,info=read_sample_zip(self.folder/'samples'/(sid+'.zip'))
+            metadata={**info.get('collection',{}),'sample_index':int(slot),'requested_count':count,
+                      'video_url':entry['url'],'reused_from_sample_id':sid}
+            if 'requested_video_seconds' not in metadata:metadata['requested_video_seconds']=info.get('video_seconds')
+            skipped.add(int(slot));yield image,metadata
+        if len(skipped)<count:
+            yield from self.extractor(entry['url'],count=count,cancelled=self.cancelled,runner=self.runner,
+                                      yt_command=self.yt_command,ffmpeg_command=self.ffmpeg_command,skip_indices=skipped)
 
     def check_space(self):
         total=sum(p.stat().st_size for p in self.folder.rglob('*') if p.is_file())
@@ -281,8 +324,9 @@ class ArchiveBatch:
         if channel_id:self.state['last_channel_id']=channel_id
         summary={'started_at':now(),'listed_archives':len(entries),'completed_videos':0,
                  'skipped_completed':0,'saved_images':0,'review_images':0,'errors':[],
+                 'history_only_videos':0,'reused_images':0,'downloaded_images':0,
                  'automatic_training':False,'production_model_modified':False,'channel_id':channel_id}
-        self.log(f'完了済みライブ {len(entries)} 本を確認しました。各 {count} 枚を取得します。')
+        self.log(f'完了済みライブ {len(entries)} 本を確認しました。処理済みを除き、未取得分だけ各 {count} 枚を処理します。')
         consecutive_failures=0;attempted=0
         try:
             for entry in entries:
@@ -292,17 +336,20 @@ class ArchiveBatch:
                 key=f'{video_id}:{count}:{self.fingerprint}'
                 previous=self.state['videos'].get(key,{})
                 saved_ids=list(previous.get('samples',{}).values())
-                if previous.get('status')=='done' and len(saved_ids)==count and all((self.folder/'samples'/(sid+'.zip')).is_file() and (self.folder/'samples'/(sid+'.json')).is_file() for sid in saved_ids):
+                if previous.get('status')=='done' and len(saved_ids)==count:
+                    if not all((self.folder/'samples'/(sid+'.zip')).is_file() for sid in saved_ids):summary['history_only_videos']+=1
                     summary['skipped_completed']+=1;continue
+                cached,was_completed=self.cached_samples(video_id,count)
+                if len(cached)<count and (was_completed or completion_key(video_id,count) in self.completed_keys):
+                    summary['skipped_completed']+=1;summary['history_only_videos']+=1
+                    continue
                 if max_videos and attempted>=max_videos:break
                 attempted+=1
                 item=self.state['videos'].setdefault(key,{'id':video_id,'samples':{}})
                 item['samples']={slot:sid for slot,sid in item['samples'].items() if (self.folder/'samples'/(sid+'.zip')).is_file() and (self.folder/'samples'/(sid+'.json')).is_file()}
                 item['status']='running';self.checkpoint()
                 try:
-                    for fallback,(image,meta) in enumerate(self.extractor(entry['url'],count=count,cancelled=self.cancelled,
-                                                                      runner=self.runner,yt_command=self.yt_command,ffmpeg_command=self.ffmpeg_command,
-                                                                      skip_indices={int(i) for i in item['samples']}),1):
+                    for fallback,(image,meta) in enumerate(self.source_images(entry,count,item['samples'],cached),1):
                         index=int(meta.get('sample_index',fallback))
                         if not 1<=index<=count:raise ValueError('抽出画像の番号が不正です。')
                         if self.cancelled.is_set():raise Cancelled('中止しました。')
@@ -310,10 +357,13 @@ class ArchiveBatch:
                         if slot in item['samples']:continue
                         row=self.analyze_image(image,meta,video_id,index,count)
                         item['samples'][slot]=row['sample_id'];summary['saved_images']+=1
+                        if meta.get('reused_from_sample_id'):summary['reused_images']+=1
+                        else:summary['downloaded_images']+=1
                         summary['review_images']+=bool(row['review_reasons']);self.checkpoint()
                     if self.cancelled.is_set():raise Cancelled('中止しました。')
                     if len(item['samples'])!=count:raise ValueError(f'抽出枚数が不足しています（{len(item["samples"])}/{count}）。次回再試行します。')
                     item['status']='done';item['completed_at']=now();item.pop('error',None)
+                    self.completed_keys.add(completion_key(video_id,count));self.state['completed_collection_keys']=sorted(self.completed_keys)
                     summary['completed_videos']+=1;consecutive_failures=0
                 except Cancelled:raise
                 except (OSError,RuntimeError,ValueError) as exc:
@@ -324,6 +374,9 @@ class ArchiveBatch:
                 if consecutive_failures>=2:
                     self.log('連続2本で失敗したため停止します。YouTubeの制限または接続状態を確認してください。');break
             summary['status']='completed_with_errors' if summary['errors'] else 'completed'
+            self.log(f'処理済み {summary["skipped_completed"]} 本は再取得していません。元画像の再利用 {summary["reused_images"]} 枚、新規取得 {summary["downloaded_images"]} 枚です。')
+            if summary['history_only_videos']:
+                self.log(f'{summary["history_only_videos"]} 本は完了履歴のみで、この保存先には元画像がそろっていません。元画像を使う場合は、取得したPCのdataフォルダも引き継いでください。')
         except Cancelled:
             summary['status']='cancelled'
         finally:
