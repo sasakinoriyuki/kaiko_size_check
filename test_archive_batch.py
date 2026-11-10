@@ -17,6 +17,7 @@ import numpy as np
 from archive_batch import ArchiveBatch,Cancelled,CommandRunner,list_archives,youtube_target,append_row,read_sample_zip
 from instance_geometry import measure_proposals
 from instance_counting import assign_instance_ids
+from archive_history import completion_key,load_completion_keys
 
 
 VIDEO='0rijis5y8c0'
@@ -46,6 +47,9 @@ def entries(count=1):
 
 
 class BatchTests(unittest.TestCase):
+    def setUp(self):
+        patcher=patch('archive_batch.load_completion_keys',return_value=set());patcher.start();self.addCleanup(patcher.stop)
+
     def test_urls_cannot_select_other_hosts_files_or_commands(self):
         for value in ['file:///etc/passwd','https://evil.example/watch?v='+VIDEO,'https://youtube.com.evil.example/'+VIDEO,
                       'https://a:b@youtube.com/watch?v='+VIDEO,'https://youtube.com/watch?v=../../x',
@@ -120,20 +124,57 @@ class BatchTests(unittest.TestCase):
             self.assertEqual(seen,[{1}]);self.assertEqual(e.calls,3)
             with Path(folder,'results.csv').open(encoding='utf-8-sig',newline='') as f:self.assertEqual(len(list(csv.DictReader(f))),3)
 
-    def test_lost_exports_are_recreated_instead_of_skipping_a_stale_checkpoint(self):
+    def test_completed_video_is_not_redownloaded_just_because_an_export_is_missing(self):
         with tempfile.TemporaryDirectory() as folder:
             e=Engine();b=ArchiveBatch(folder,e,extractor=extraction);b.run(count=1,entries=entries())
             next(Path(folder,'samples').glob('*.zip')).unlink()
             result=ArchiveBatch(folder,e,extractor=extraction).run(count=1,entries=entries())
-            self.assertEqual(result['saved_images'],1);self.assertEqual(e.calls,2)
+            self.assertEqual(result['saved_images'],0);self.assertEqual(e.calls,1)
+            self.assertEqual(result['history_only_videos'],1)
             with Path(folder,'results.csv').open(encoding='utf-8-sig',newline='') as f:self.assertEqual(len(list(csv.DictReader(f))),1)
 
     def test_changed_engine_is_not_mistaken_for_a_completed_analysis(self):
         with tempfile.TemporaryDirectory() as folder:
             e=Engine();ArchiveBatch(folder,e,extractor=extraction).run(count=1,entries=entries())
             e.metadata={'model_version':'different'}
-            r=ArchiveBatch(folder,e,extractor=extraction).run(count=1,entries=entries())
+            def forbidden(*a,**k):self.fail('model update redownloaded existing source pixels')
+            r=ArchiveBatch(folder,e,extractor=forbidden).run(count=1,entries=entries())
             self.assertEqual(r['saved_images'],1);self.assertEqual(e.calls,2)
+            self.assertEqual(r['reused_images'],1);self.assertEqual(r['downloaded_images'],0)
+
+    def test_school_can_skip_returned_completion_history_without_local_images(self):
+        with tempfile.TemporaryDirectory() as folder:
+            e=Engine()
+            def forbidden(*a,**k):self.fail('completed home video redownloaded on school profile')
+            result=ArchiveBatch(folder,e,extractor=forbidden,completed_keys={completion_key(VIDEO,5)}).run(count=5,entries=entries())
+            self.assertEqual(result['skipped_completed'],1);self.assertEqual(result['history_only_videos'],1)
+            self.assertEqual(e.calls,0);self.assertFalse(Path(folder,'results.csv').exists())
+            # The receipt remains local even if a later package has no seed list.
+            result=ArchiveBatch(folder,e,extractor=forbidden,completed_keys=set()).run(count=5,entries=entries())
+            self.assertEqual(result['skipped_completed'],1)
+
+    def test_imported_receipts_do_not_skip_unrelated_new_videos(self):
+        with tempfile.TemporaryDirectory() as folder:
+            result=ArchiveBatch(folder,Engine(),extractor=extraction,completed_keys={completion_key('other000001',1)}).run(count=1,entries=entries())
+            self.assertEqual(result['saved_images'],1);self.assertEqual(result['skipped_completed'],0)
+
+    def test_more_samples_reuse_the_source_positions_which_already_exist(self):
+        with tempfile.TemporaryDirectory() as folder:
+            e=Engine();ArchiveBatch(folder,e,extractor=extraction).run(count=5,entries=entries())
+            seen=[]
+            def collect(*args,**kwargs):seen.append(kwargs['skip_indices']);yield from extraction(*args,**kwargs)
+            result=ArchiveBatch(folder,e,extractor=collect).run(count=10,entries=entries())
+            self.assertEqual(seen,[{1,10}]);self.assertEqual(result['reused_images'],2)
+            self.assertEqual(result['downloaded_images'],8)
+
+    def test_completed_receipts_do_not_claim_that_source_images_were_transferred(self):
+        with tempfile.TemporaryDirectory() as folder:
+            p=Path(folder,'history.json');key=completion_key(VIDEO,5)
+            p.write_text(json.dumps({'schema':1,'keys':[key]}))
+            self.assertEqual(load_completion_keys(p),{key})
+            self.assertNotIn(VIDEO,p.read_text());self.assertNotIn('estimated_count',p.read_text())
+            p.write_text(json.dumps({'schema':1,'keys':['not a hash']}))
+            with self.assertRaises(ValueError):load_completion_keys(p)
 
     def test_two_failures_stop_and_are_retryable(self):
         def fail(*args,**kwargs):raise RuntimeError('fixture video blocked')

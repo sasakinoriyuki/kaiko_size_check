@@ -40,6 +40,8 @@ class BatchWindow:
         self.start_button=ttk.Button(buttons,text='全アーカイブを自動処理／続きから再開',command=self.start);self.start_button.pack(side='left')
         ttk.Button(buttons,text='停止',command=self.stop).pack(side='left',padx=8)
         ttk.Button(buttons,text='結果の保存先を開く',command=self.open_output).pack(side='left')
+        self.pack_button=ttk.Button(buttons,text='改善用ZIPを作る',command=self.make_review_exports)
+        self.pack_button.pack(side='left',padx=8)
         self.status=tk.StringVar(value='開始を押すと、画像選択・解析・保存を順番に実行します。途中停止後も再開できます。')
         ttk.Label(panel,textvariable=self.status,wraplength=810).pack(anchor='w',pady=5)
         self.log=tk.Text(panel,height=12,wrap='word',state='disabled');self.log.pack(fill='both',expand=True)
@@ -85,6 +87,11 @@ class BatchWindow:
                 self.events.put(('error',str(exc)))
         self.thread=threading.Thread(target=work,daemon=False);self.thread.start()
 
+    def make_review_exports(self):
+        from archive_review import launch_review_export
+        try:launch_review_export(self.output)
+        except OSError as exc:self.status.set('改善用ZIPの作成を起動できません：'+str(exc))
+
     def save_preferences(self):
         if not self.config.exists():return
         saved=json.loads(self.config.read_text(encoding='utf-8'))
@@ -108,7 +115,7 @@ class BatchWindow:
                 self.busy=False;self.start_button.configure(state='normal')
                 if kind=='error':self.status.set('処理を保留しました：'+value)
                 else:
-                    self.status.set(f'保存 {value["saved_images"]} 枚／改善対象 {value["review_images"]} 枚／取得・解析エラー {len(value["errors"])} 件。結果は保存先にあります。')
+                    self.status.set(f'保存 {value["saved_images"]} 枚／処理済みを除外 {value["skipped_completed"]} 本（履歴のみ {value.get("history_only_videos",0)} 本）／元画像再利用 {value.get("reused_images",0)} 枚／エラー {len(value["errors"])} 件。')
                     if self.repeat.get() and not self.closing:
                         self.timer=self.root.after(6*60*60*1000,lambda:self.start() if self.repeat.get() and not self.closing else None)
         if self.closing and not self.busy:self.root.destroy();return
@@ -116,8 +123,13 @@ class BatchWindow:
 
     def open_output(self):
         self.output.mkdir(parents=True,exist_ok=True)
-        if os.name=='nt':os.startfile(str(self.output))
-        else:subprocess.Popen(['open' if sys.platform=='darwin' else 'xdg-open',str(self.output)])
+        self.open_folder(self.output)
+
+    def open_folder(self,folder):
+        try:
+            if os.name=='nt':os.startfile(str(folder))
+            else:subprocess.Popen(['open' if sys.platform=='darwin' else 'xdg-open',str(folder)])
+        except OSError:self.status.set('フォルダを開けませんでした。保存先：'+str(folder))
 
     def close(self):
         self.closing=True;self.stop()
