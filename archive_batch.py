@@ -278,9 +278,12 @@ class ArchiveBatch:
         output=folder/(sid+'.zip');receipt=folder/(sid+'.json')
         if output.exists() and receipt.exists():return json.loads(receipt.read_text(encoding='utf-8'))
         self.log(f'{video_id}：画像 {index}/{count} を解析しています。')
+        analysis_start=time.monotonic()
         candidates,device=self.engine.analyze(image,Settings())
         info={**self.engine.metadata,**self.engine.last_info,'model_sha256':self.engine.model_sha256,
-              'analysis_fingerprint':self.fingerprint,'device':device}
+              'analysis_fingerprint':self.fingerprint,'device':device,
+              'runtime':{**getattr(self.engine,'runtime_info',{}),'device':device},
+              'analysis_seconds':time.monotonic()-analysis_start}
         info['instances']=[{'id':c.instance_id,'counted':c.counted,'confidence':c.confidence,
                            'count_reason':c.count_reason,'length_px':c.length_px,'reason':c.reason,
                            'visible_length_px':c.visible_length_px,'visible_note':c.visible_note,

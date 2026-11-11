@@ -3,13 +3,14 @@ import hashlib
 import importlib
 import os
 from pathlib import Path
+import platform
 import tempfile
 
 import cv2
 import numpy as np
 
 from ai_measurement import content_view
-from instance_geometry import merge_views,measure_proposals
+from instance_geometry import merge_views,measure_proposals,intersection
 from instance_counting import assign_instance_ids
 from visible_measurement import estimate_visible_segments,visible_segment_count
 
@@ -78,6 +79,23 @@ def tile_positions(extent,size):
     return result
 
 
+def thin_recheck_seeds(proposals,limit=2):
+    """Revisit thin, nearly connected uncertain bodies, not every pale object."""
+    result=[]
+    for p in sorted(proposals,key=lambda p:p['score'],reverse=True):
+        if not .45<=p['score']<.6 or not 16<=max(p['mask'].shape)<=192:continue
+        binary=(p['mask']>0).astype(np.uint8)
+        _,_,stats,_=cv2.connectedComponentsWithStats(binary,8)
+        area=int(binary.sum())
+        if len(stats)<2 or stats[1:,cv2.CC_STAT_AREA].max()/max(1,area)<.97:continue
+        ys,xs=np.nonzero(binary)
+        eigenvalues=np.linalg.eigvalsh(np.cov(np.asarray([xs,ys],dtype=float)))
+        if np.sqrt(eigenvalues[-1]/max(1.,eigenvalues[0]))<3:continue
+        result.append(p)
+        if len(result)>=limit:break
+    return result
+
+
 def automatic_camera_roi(frame):
     """Recognise a dark, neutral OBS sidebar; keep plain camera inputs whole."""
     h,w=frame.shape[:2]
@@ -99,10 +117,14 @@ class LocalInstanceSegmenter:
         self.device='cuda' if torch.cuda.is_available() else 'cpu'
         self.model=load_detector(ensure_instance_model(model_path),self.device)
         self.model_sha256=MODEL_SHA256
-        self.metadata={'model_version':'DSRI instances + separate visible-segment lengths v3',
+        self.metadata={'model_version':'DSRI instances + bounded thin-body recheck v4',
                        'inference_threshold':.35,'pretrained':True,'model_source':'YOLOv8-DSRI / AGPL-3.0',
                        'measurement_status':'automatic_estimate','stages':'1-5; hatchling validation pending'}
         self.last_info={}
+        self.runtime_info={'device':self.device,'python_version':platform.python_version(),
+                           'torch_version':str(torch.__version__),
+                           'cuda_runtime_version':torch.version.cuda,
+                           'gpu_name':torch.cuda.get_device_name() if self.device=='cuda' else None}
         self.texture_model_path=Path(texture_model_path) if texture_model_path else Path(__file__).parent/'models/kaiko_texture.pt'
         self.texture_model=None
         self.metadata['texture_veto_sha256']=(hashlib.sha256(self.texture_model_path.read_bytes()).hexdigest()
@@ -141,6 +163,49 @@ class LocalInstanceSegmenter:
                 result.append({'mask':mask,'offset':(left,top),'score':float(scores[i]),
                                'box':(left,top,right,bottom),'source':'whole'})
             return result
+
+    def recheck_thin_bodies(self,view,proposals,probability):
+        """Two matching contrast views may support a count; full length stays held.
+
+        The original texture probabilities veto both views. Crops never move
+        source coordinates, and additional objects in a crop are not accepted.
+        """
+        extras=[];calls=0;seeds=thin_recheck_seeds(proposals)
+        height,width=view.shape[:2]
+        for seed in seeds:
+            sx,sy=seed['offset'];sh,sw=seed['mask'].shape
+            if sx<3 or sy<3 or sx+sw>width-3 or sy+sh>height-3:continue
+            side=384;cw,ch=min(side,width),min(side,height)
+            left=int(np.clip(sx+sw/2-cw/2+cw/16,0,width-cw))
+            top=int(np.clip(sy+sh/2-ch/2-ch/16,0,height-ch))
+            original=view[top:top+ch,left:left+cw]
+            boosted=neutral_boost(original)
+            stronger=np.clip(original.astype(np.float32)+(boosted.astype(np.float32)-original)*1.5,0,255).astype(np.uint8)
+            alternatives=[]
+            for search in (boosted,stronger):
+                calls+=1;matches=[]
+                for p in self.predict(search,960,.6):
+                    x0,y0,x1,y1=p['box']
+                    if x0<2 or y0<2 or x1>cw-2 or y1>ch-2:continue
+                    p={**p,'offset':(p['offset'][0]+left,p['offset'][1]+top)}
+                    common=intersection(seed,p)
+                    area=int(np.count_nonzero(p['mask']));seed_area=int(np.count_nonzero(seed['mask']))
+                    if common/max(1,seed_area)<.7 or common/max(1,area+seed_area-common)<.65:continue
+                    x,y=p['offset'];h,w=p['mask'].shape
+                    if np.median(probability[y:y+h,x:x+w][p['mask']>0])<.5:continue
+                    sat=cv2.cvtColor(view[y:y+h,x:x+w],cv2.COLOR_BGR2HSV)[:,:,1]
+                    if (sat[p['mask']>0]<110).mean()<.65:continue
+                    matches.append(p)
+                alternatives.append(max(matches,key=lambda p:p['score']) if matches else None)
+            a,b=alternatives
+            if a is None or b is None:continue
+            common=intersection(a,b)
+            if common/max(1,int(np.count_nonzero(a['mask']))+int(np.count_nonzero(b['mask']))-common)<.8:continue
+            for p in alternatives:
+                extras.append({**p,'source':'small_tile','full_length_hold':'rechecked_body',
+                               'count_evidence':'two_contrast_views_and_original_texture'})
+        return extras,{'thin_recheck_seeds':len(seeds),'thin_recheck_views':calls,
+                       'thin_recheck_matches':len(extras)//2}
 
     def analyze(self,frame,settings,roi=None):
         settings.validate()
@@ -190,6 +255,13 @@ class LocalInstanceSegmenter:
             proposals=guarded
         filtered=merge_views(proposals,view.shape)
         candidates=measure_proposals(filtered,view.shape,merged=True)
+        recheck={'thin_recheck_seeds':0,'thin_recheck_views':0,'thin_recheck_matches':0}
+        if small and not any(c.counted for c in candidates):
+            extras,recheck=self.recheck_thin_bodies(view,filtered,probability)
+            views+=recheck['thin_recheck_views']
+            if extras:
+                filtered=merge_views(proposals+extras,view.shape)
+                candidates=measure_proposals(filtered,view.shape,merged=True)
         estimate_visible_segments(filtered,candidates)
         for c in candidates:
             c.contour=c.contour+np.asarray(offset)
@@ -203,5 +275,6 @@ class LocalInstanceSegmenter:
                         'count_thresholds':{'whole':.6,'small_with_texture_guard':.6,'detail_only':.85},
                         'visible_segment_count':visible_segment_count(candidates),
                         'visible_segment_policy':'longest_continuous_piece; full-length means exclude partials',
+                        **recheck,
                         **counts}
         return candidates,self.device

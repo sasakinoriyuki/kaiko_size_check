@@ -8,7 +8,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 from ai_measurement import AIJob,AIWorker
-from instance_detector import ensure_instance_model,automatic_camera_roi,neutral_boost,LocalInstanceSegmenter,tile_positions
+from instance_detector import ensure_instance_model,automatic_camera_roi,neutral_boost,LocalInstanceSegmenter,tile_positions,thin_recheck_seeds
 from instance_geometry import measure_proposals
 from measurement import Settings
 from test_app import headless_app,FakeValue,read_rows
@@ -64,11 +64,48 @@ class InstanceTests(unittest.TestCase):
         cs=measure_proposals([{'mask':mask,'offset':(30,30),'score':.55}],(300,500))
         self.assertIsNone(cs[0].length_px);self.assertEqual(cs[0].reason,'low_confidence')
 
+    def test_recheck_seeds_reject_round_fragmented_and_too_large_objects(self):
+        thin=np.zeros((80,70),np.uint8);cv2.line(thin,(10,10),(60,70),1,9)
+        round_mask=np.zeros((80,80),np.uint8);cv2.circle(round_mask,(40,40),25,1,-1)
+        split=np.zeros((80,70),np.uint8);split[5:25,5:15]=1;split[45:65,45:55]=1
+        masks=[thin,round_mask,split,np.ones((220,10),np.uint8)]
+        ps=[{'mask':m,'score':.55,'offset':(30,40)} for m in masks]
+        self.assertEqual(thin_recheck_seeds(ps),[ps[0]])
+        self.assertEqual(thin_recheck_seeds([{**ps[0],'score':.44}]),[])
+        self.assertEqual(thin_recheck_seeds([{**ps[0],'score':.65}]),[])
+        self.assertEqual(len(thin_recheck_seeds([ps[0]]*10)),2)
+
+    def test_recheck_requires_two_matching_views_and_keeps_source_coordinates(self):
+        engine=LocalInstanceSegmenter.__new__(LocalInstanceSegmenter)
+        view=np.full((500,600,3),70,np.uint8);prob=np.ones((500,600),np.float32)
+        mask=np.zeros((80,30),np.uint8);cv2.line(mask,(15,8),(15,70),1,9)
+        seed={'mask':mask,'offset':(230,210),'score':.55}
+        def predict(patch,size,confidence):
+            self.assertEqual(size,960);self.assertEqual(confidence,.6)
+            # The 384px crop has source origin (77,34).
+            return [{'mask':mask.copy(),'offset':(153,176),'box':(153,176,183,256),'score':.8}]
+        engine.predict=predict
+        extras,info=engine.recheck_thin_bodies(view,[seed],prob)
+        self.assertEqual(info['thin_recheck_views'],2);self.assertEqual(info['thin_recheck_matches'],1)
+        self.assertEqual(len(extras),2);self.assertEqual(extras[0]['offset'],seed['offset'])
+        self.assertEqual(extras[0]['full_length_hold'],'rechecked_body')
+        cs=measure_proposals(extras,view.shape)
+        self.assertEqual(len(cs),1);self.assertTrue(cs[0].counted)
+        self.assertIsNone(cs[0].length_px);self.assertEqual(cs[0].count_reason,'detector_recheck')
+        calls=[]
+        def once(*args):
+            calls.append(1);return predict(*args) if len(calls)==1 else []
+        engine.predict=once
+        self.assertEqual(engine.recheck_thin_bodies(view,[seed],prob)[0],[])
+        engine.predict=predict
+        self.assertEqual(engine.recheck_thin_bodies(view,[seed],prob*0)[0],[])
+
     def test_worker_routes_instance_model_and_returns_provenance(self):
         class Engine:
             metadata={'model_version':'test-instance','inference_threshold':.35,
                       'texture_veto_sha256':'a'*64}
             model_sha256='test';last_info={'detected_count':1,'measurement_status':'automatic_estimate'}
+            runtime_info={'python_version':'3.12','torch_version':'test','gpu_name':None}
             def analyze(self,*args):return [],'test'
         worker=AIWorker(instance_factory=Engine)
         try:
@@ -78,6 +115,10 @@ class InstanceTests(unittest.TestCase):
             self.assertIsNone(result['error']);self.assertEqual(result['measurement_info']['measurement_status'],'automatic_estimate')
             self.assertEqual(result['model_version'],'test-instance')
             self.assertEqual(result['measurement_info']['texture_veto_sha256'],'a'*64)
+            self.assertEqual(result['measurement_info']['runtime']['device'],'test')
+            self.assertEqual(result['measurement_info']['runtime']['python_version'],'3.12')
+            self.assertGreaterEqual(result['measurement_info']['analysis_seconds'],0)
+            self.assertGreaterEqual(result['measurement_info']['worker_seconds'],result['measurement_info']['analysis_seconds'])
         finally:worker.close()
 
     def test_static_image_automatically_starts_measurement_without_manual_trace(self):
