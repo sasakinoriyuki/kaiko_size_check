@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import threading
 import time
 import tkinter as tk
@@ -23,6 +24,15 @@ from instance_counting import count_summary
 from visible_measurement import visible_segment_count
 
 BASE = Path(__file__).resolve().parent
+
+
+def application_version(base=BASE):
+    try:
+        path=Path(base)/'update_manifest.json'
+        if path.stat().st_size>1024*1024:return ''
+        version=json.loads(path.read_text(encoding='utf-8')).get('version','')
+        return version if isinstance(version,str) and re.fullmatch(r'[A-Za-z0-9._+\-]{1,64}',version) else ''
+    except (OSError,ValueError,AttributeError):return ''
 
 
 class Capture:
@@ -84,7 +94,8 @@ class Capture:
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("蚕CHANNEL 頭数・体長チェック — " + ("学校用・" if os.environ.get('KAIKO_SCHOOL_MODE') == '1' else '') + "1〜5齢 自動解析・試験版")
+        self.app_version=application_version()
+        root.title("蚕CHANNEL 頭数・体長チェック — " + ("学校用・" if os.environ.get('KAIKO_SCHOOL_MODE') == '1' else '') + "1〜5齢 自動解析・試験版" + (" / "+self.app_version if self.app_version else ''))
         root.geometry("1380x930")
         root.minsize(1150, 800)
         self.capture = None
@@ -610,6 +621,7 @@ class App:
         archive_path = directory / f"{stem}.zip"
         temporary_path = directory / f"{stem}.tmp"
         metadata = {
+            "app_version":getattr(self,'app_version','') or None,
             "timestamp": stamp.isoformat(timespec="seconds"),
             "source": self.source, "video_seconds": self.position,
             "source_resolution": [w, h], "crop_xyxy": [x0, y0, x1, y1],
@@ -961,7 +973,7 @@ class App:
             partials=visible_segment_count(self.candidates)
             self.result.set(prefix + f"頭数推定 {counts['estimated_count']} 頭（画面内）\n頭数の要確認 {counts['uncertain_regions']} 候補\n全長推定 {counts['measured_count']} 匹分\n全長保留 {counts['unmeasured_count']} 頭（可視部 {partials} 頭）\n全長平均 {mean}\n最小〜最大 {span}\n{scale}")
             self.items.delete(0,'end')
-            reasons={'low_confidence':'検出の確信度不足','edge':'画面端','fragmented':'輪郭の欠け','branch':'輪郭の分岐','loop':'輪郭の重なり','overlap':'個体の重なり','overlap_at_end':'頭尾の重なり','shape':'形状確認','short':'小さすぎる','outside_mask':'中心線の確認'}
+            reasons={'low_confidence':'検出の確信度不足','edge':'画面端','fragmented':'輪郭の欠け','branch':'輪郭の分岐','loop':'輪郭の重なり','overlap':'個体の重なり','overlap_at_end':'頭尾の重なり','shape':'形状確認','short':'小さすぎる','outside_mask':'中心線の確認','rechecked_body':'拡大再確認・頭尾は未確認'}
             for c in self.candidates:
                 if not c.counted:continue
                 label=f'{c.instance_id:02d}' if c.instance_id is not None else '—'

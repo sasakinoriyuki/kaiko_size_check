@@ -323,11 +323,13 @@ class AIWorker:
                     if self.engine is None:
                         self.engine = self.factory()
                     engine = self.engine
+                analysis_start = time.monotonic()
                 if job.prompt_points is None:
                     candidates, device = engine.analyze(job.frame, job.settings, job.roi)
                 else:
                     candidates, device = engine.prompt(
                         job.frame, job.settings, job.roi, job.prompt_points, job.prompt_labels)
+                analysis_seconds = time.monotonic()-analysis_start
                 result = {"job": job, "candidates": candidates, "device": device,
                           "seconds": time.monotonic()-start, "error": None}
                 if job.backend.startswith("scratch_preview"):
@@ -338,7 +340,10 @@ class AIWorker:
                     result["model_sha256"] = getattr(engine, "model_sha256", None)
                 if job.backend == "instance":
                     result['measurement_info'] = {**getattr(engine,'metadata',{}),
-                                                  **getattr(engine,'last_info',{})}
+                                                  **getattr(engine,'last_info',{}),
+                                                  'runtime':{**getattr(engine,'runtime_info',{}),'device':device},
+                                                  'analysis_seconds':analysis_seconds,
+                                                  'worker_seconds':result['seconds']}
             except Exception as exc:
                 result = {"job": job, "error": str(exc) or type(exc).__name__}
             if not self.stopped.is_set():

@@ -11,7 +11,7 @@ from zipfile import ZipFile
 import cv2
 import numpy as np
 
-from app import App, Capture
+from app import App, Capture, application_version
 from measurement import Settings, demo_frame
 
 
@@ -67,6 +67,17 @@ def read_rows(path):
 
 
 class ApplicationTests(unittest.TestCase):
+    def test_release_version_is_local_and_ignores_invalid_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'update_manifest.json'
+            self.assertEqual(application_version(directory),'')
+            path.write_text(json.dumps({'version':'2026.11.11-v9'}))
+            self.assertEqual(application_version(directory),'2026.11.11-v9')
+            for value in ['unexpected\ntext',123,None]:
+                path.write_text(json.dumps({'version':value}))
+                self.assertEqual(application_version(directory),'')
+            path.write_text('[]');self.assertEqual(application_version(directory),'')
+
     def test_validation_sample_preserves_original_crop_pixels_and_scale_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             app = headless_app(directory)

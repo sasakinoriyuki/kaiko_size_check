@@ -175,6 +175,8 @@ def merge_views(proposals,frame_shape):
         if geometry is None:continue
         fused={**chosen,**evidence,'score':max(p['score'] for p in group),
                'mask_score':chosen['score'],'geometry':geometry,'views':len(group)}
+        hold=next((p.get('full_length_hold') for p in group if p.get('full_length_hold')),None)
+        if hold:fused['full_length_hold']=hold
         if geometry.reason in {'shape','short'}:fused['reject_count']=True
         result.append(fused)
     return sorted(result,key=lambda p:p['score'],reverse=True)
@@ -214,6 +216,9 @@ def measure_proposals(proposals,frame_shape,*,merged=False):
             c.count_reason='detector' if c.counted else 'low_confidence'
         if c.path is not None and c.confidence<.6:
             c.path=None;c.length_px=None;c.reason='low_confidence'
+        if p.get('full_length_hold'):
+            c.path=None;c.length_px=None;c.reason=p['full_length_hold']
+            if c.counted:c.count_reason='detector_recheck'
         if c.path is not None:
             # An endpoint hidden behind another detected body cannot yield full length.
             endpoints=np.rint(c.path[[0,-1]]).astype(int)
