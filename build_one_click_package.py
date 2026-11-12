@@ -13,6 +13,7 @@ CODE = ['app.py','measurement.py','ai_measurement.py','scratch_measurement.py','
 CODE += ['instance_detector.py','instance_geometry.py','instance_counting.py','visible_measurement.py','THIRD_PARTY.md','ACCURACY.md']
 CODE += ['body_dimensions.py']
 CODE += ['improvement_review.py','improvement_ui.py','IMPROVEMENT_MODE.md']
+CODE += ['review_learning.py']
 CODE += ['archive_batch.py','archive_batch_ui.py','archive_tools.py','archive_review.py','archive_history.py','archive_completion_history.json','ARCHIVE_AUTOMATION.md']
 CODE += [p.relative_to(Path(__file__).parent).as_posix() for p in sorted((Path(__file__).parent/'kaiko_dsri').rglob('*'))
          if p.is_file() and p.suffix in {'.py','.md','.txt'}]

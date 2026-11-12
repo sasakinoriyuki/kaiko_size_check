@@ -42,6 +42,29 @@ def read_source(path):
     return raw,image,info
 
 
+def resolve_source(data,record,index=None):
+    """Find a verified original after a portable data folder has moved PCs."""
+    data=Path(data).resolve();digest=record['source_sha256']
+    directories=[data/'samples',data/'archive_batch/samples']
+    supplied=Path(record.get('source_zip','')).resolve()
+    if supplied.parent in {p.resolve() for p in directories} and supplied.is_file() and not supplied.is_symlink():
+        raw,image,info=read_source(supplied)
+        if hashlib.sha256(raw).hexdigest()!=digest:raise ValueError('元画像が変更されました。')
+        return supplied
+    index={} if index is None else index
+    if not index.get('_scanned'):
+        for directory in directories:
+            if directory.is_symlink():continue
+            for path in sorted(directory.glob('*.zip')):
+                if path.is_symlink():continue
+                try:
+                    raw,image,info=read_source(path);index[hashlib.sha256(raw).hexdigest()]=path
+                except (OSError,ValueError,KeyError,RuntimeError,BadZipFile,cv2.error):continue
+        index['_scanned']=True
+    if digest not in index:raise ValueError('修正した元画像が見つかりません。data/samplesとdata/archive_batch/samplesも引き継いでください。')
+    return index[digest]
+
+
 def predictions(info,shape):
     h,w=shape[:2];crop=info.get('crop_xyxy',[0,0,w,h]);offset=np.zeros(2)
     if isinstance(crop,list) and len(crop)==4 and crop[2]-crop[0]==w and crop[3]-crop[1]==h:offset=np.asarray(crop[:2])
@@ -99,6 +122,8 @@ class ReviewQueue:
             record=json.loads(path.read_text(encoding='utf-8'));self.objects=record['objects'];self.rejected=record.get('rejected_predictions',[])
         else:self.objects=predictions(self.info,self.image.shape);self.rejected=[]
         self.original=record.get('original_predictions',predictions(self.info,self.image.shape)) if path.is_file() else copy.deepcopy(self.objects)
+        self.baseline_available=(record.get('baseline_available',bool(self.original)) if path.is_file() else
+                                 isinstance((self.info.get('model_info') or {}).get('instances'),list))
         self.save(False);return self.image
     def change(self):self.history.append(copy.deepcopy((self.objects,self.rejected)))
     def add(self,points,visibility='unknown'):
@@ -126,6 +151,7 @@ class ReviewQueue:
                 'status':'completed' if completed else 'draft','objects':copy.deepcopy(self.objects),
                 'rejected_predictions':copy.deepcopy(self.rejected),
                 'original_predictions':copy.deepcopy(self.original),
+                'baseline_available':self.baseline_available,
                 'collection':self.info.get('collection',{}),'timestamp':datetime.now(timezone.utc).isoformat(),
                 'unreviewed_pixels':'ignore','note':'Visible-instance annotations; no hidden full bodies inferred.'}
         if completed:
@@ -135,7 +161,7 @@ class ReviewQueue:
         self.save(True);self.current=None;return self.next()
     def export(self,max_bytes=24*1024**2):
         stamp=datetime.now().strftime('%Y%m%d_%H%M%S')+'_'+uuid.uuid4().hex[:6]
-        outputs=[];count=0;z=None;temporary=None
+        outputs=[];count=0;z=None;temporary=None;source_index={}
         def close_part():
             nonlocal z,temporary
             z.close();target=temporary.with_suffix('.zip');os.replace(temporary,target);outputs.append(target)
@@ -145,8 +171,7 @@ class ReviewQueue:
                 if path.is_symlink():continue
                 r=json.loads(path.read_text(encoding='utf-8'))
                 if r.get('status')!='completed':continue
-                source=Path(r['source_zip']).resolve()
-                if source.parent not in {(self.data/'samples').resolve(),(self.data/'archive_batch/samples').resolve()}:raise ValueError('元画像の保存先が一致しません。')
+                source=resolve_source(self.data,r,source_index)
                 raw,image,info=read_source(source);digest=hashlib.sha256(raw).hexdigest()
                 if digest!=r['source_sha256']:raise ValueError('元画像が変更されました。')
                 cleaned={k:v for k,v in r.items() if k!='source_zip'}

@@ -97,7 +97,7 @@ def run(channel):
             logs='\n'.join(p.read_text(encoding='utf-8-sig',errors='replace') for p in (root/'logs').glob('setup_*.txt'))
             assert str(school_python/'python.exe') in logs
         interpreter=root/environments[-1]/'Scripts/python.exe'
-        modules=['test_measurement','test_body_dimensions','test_improvement_review','test_instance_geometry','test_instance_counting',
+        modules=['test_measurement','test_body_dimensions','test_improvement_review','test_review_learning','test_instance_geometry','test_instance_counting',
                  'test_visible_measurement','test_app','test_ai_measurement',
                  'test_instance_detector','test_archive_batch','test_archive_review']
         check_code=("import sys,unittest;sys.path.insert(0,sys.argv[1]);"
