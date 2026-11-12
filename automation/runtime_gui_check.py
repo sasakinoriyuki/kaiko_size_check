@@ -97,10 +97,30 @@ def run(installed_root,expected_version,rounds=3):
         assert abs(dimensions['individual_sizes'][0]['body_width_cm']-c.width_px/50)<1e-6
         app.ppmm=None;app.publish_candidates('auto_instance_estimate',force_record=True)
         assert 'cm' not in app.items.get(0) and 'px' in app.items.get(0)
+        from improvement_ui import ImprovementWindow
+        from zipfile import ZipFile
+        review_data=installed_root/'data/review_ci_fixture'
+        source_dir=review_data/'samples';source_dir.mkdir(parents=True)
+        for i in range(2):
+            _,encoded=cv2.imencode('.png',np.full((80,120,3),100+i,np.uint8))
+            metadata={'model_info':{'instances':[{'contour_source_xy':[[10,10],[50,10],[50,35],[10,35]]}]}}
+            with ZipFile(source_dir/(str(i)+'.zip'),'w') as archive:
+                archive.writestr('source.png',encoded.tobytes());archive.writestr('source.json',json.dumps(metadata))
+        review=ImprovementWindow(tk.Toplevel(root),review_data)
+        until=time.monotonic()+15
+        while review.queue.current is None and time.monotonic()<until:root.update();time.sleep(.03)
+        assert review.queue.current and len(review.queue.objects)==1
+        review.selected=0;review.delete();review.undo();assert len(review.queue.objects)==1
+        review.begin();review.points=[[60,40],[90,40],[90,60]];review.finish_polygon()
+        assert len(review.queue.objects)==2
+        review.complete();assert review.queue.position==1
+        review.complete();assert review.queue.current is None
+        exported,review_count=review.queue.export();assert review_count==2 and exported
+        review.close()
         report={'release':expected_version,'rounds':rounds,'cases':results,
                 'zip_reopened_and_reanalyzed':True,'portable_data':True,
                 'synthetic_inputs_only':True,'biological_accuracy_test':False,
-                'individual_pixel_and_cm_dimensions':True,
+                'individual_pixel_and_cm_dimensions':True,'improvement_mode_gui_verified':True,
                 'runtime':info['runtime']}
         print(json.dumps(report),flush=True)
         return report
