@@ -80,7 +80,7 @@ class ReviewLearningTests(unittest.TestCase):
             shutil.copytree(old,new);shutil.rmtree(old)
             out,r=prepare(new);self.assertEqual(r['images'],2)
             packs,n=ReviewQueue(new).export();self.assertEqual(n,2)
-            self.assertTrue(all(p.is_relative_to(new) for p in packs))
+            self.assertTrue(all(p.resolve().is_relative_to(new.resolve()) for p in packs))
     def test_pending_sources_cannot_train(self):
         with tempfile.TemporaryDirectory() as d:
             reviewed(d,'one',90);out,report=prepare(d)
