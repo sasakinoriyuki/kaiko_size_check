@@ -1,0 +1,34 @@
+name: Verify signed Windows release repeatedly
+on:
+  push:
+    branches: [school, parsonal]
+    paths:
+      - '.updates/channel.json'
+      - 'automation/windows_release_check.py'
+      - 'automation/runtime_gui_check.py'
+      - '.github/workflows/windows_release_check.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    if: github.event.repository.private == false
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fresh BAT, repeated start, installed GUI, ZIP round trips
+        shell: pwsh
+        run: python automation/windows_release_check.py --channel $env:GITHUB_REF_NAME
