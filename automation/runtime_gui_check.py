@@ -103,7 +103,8 @@ def run(installed_root,expected_version,rounds=3):
         source_dir=review_data/'samples';source_dir.mkdir(parents=True)
         for i in range(2):
             _,encoded=cv2.imencode('.png',np.full((80,120,3),100+i,np.uint8))
-            metadata={'model_info':{'instances':[{'contour_source_xy':[[10,10],[50,10],[50,35],[10,35]]}]}}
+            metadata={'collection':{'video_id':['aaaaaaaaaaa','bbbbbbbbbbb'][i],'upload_date':'2026010'+str(i+1)},
+                      'model_info':{'instances':[{'contour_source_xy':[[10,10],[50,10],[50,35],[10,35]]}]}}
             with ZipFile(source_dir/(str(i)+'.zip'),'w') as archive:
                 archive.writestr('source.png',encoded.tobytes());archive.writestr('source.json',json.dumps(metadata))
         review=ImprovementWindow(tk.Toplevel(root),review_data)
@@ -116,11 +117,21 @@ def run(installed_root,expected_version,rounds=3):
         review.complete();assert review.queue.position==1
         review.complete();assert review.queue.current is None
         exported,review_count=review.queue.export();assert review_count==2 and exported
+        review.prepare_reviews()
+        until=time.monotonic()+15
+        while time.monotonic()<until and (review.work_thread.is_alive() or review.work_result is not None):
+            root.update();time.sleep(.03)
+        root.update()
+        assert '完了 2枚' in review.status.get(),review.status.get()
+        prepared=json.loads((review_data/'improvement/latest_dataset.json').read_text(encoding='utf-8'))
+        assert prepared['summary']['train_images']==prepared['summary']['validation_images']==1
+        assert not prepared['summary']['model_applied']
         review.close()
         report={'release':expected_version,'rounds':rounds,'cases':results,
                 'zip_reopened_and_reanalyzed':True,'portable_data':True,
                 'synthetic_inputs_only':True,'biological_accuracy_test':False,
                 'individual_pixel_and_cm_dimensions':True,'improvement_mode_gui_verified':True,
+                'corrections_prepared_via_gui':True,
                 'runtime':info['runtime']}
         print(json.dumps(report),flush=True)
         return report

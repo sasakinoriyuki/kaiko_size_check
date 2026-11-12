@@ -2,7 +2,7 @@
 import argparse
 import threading
 import tkinter as tk
-from tkinter import ttk,messagebox
+from tkinter import ttk,messagebox,filedialog
 import cv2
 import numpy as np
 from PIL import Image,ImageTk
@@ -17,12 +17,18 @@ class ImprovementWindow:
         self.lock=FileLock(self.queue.folder/'.window.lock')
         if not self.lock.acquire():raise RuntimeError('改善モードは既に開いています。')
         self.scan_result=None;self.closed=False;self.worker=None;self.revision=0;self.pending_auto=False
+        self.work_thread=None;self.work_result=None
         top=ttk.Frame(root,padding=8);top.pack(fill='x')
         for label,command in [('輪郭を囲んで追加',self.begin),('選択した輪郭を描き直す',self.redraw),
                               ('選択を削除',self.delete),('1つ戻す',self.undo),('この画像を再解析',self.analyze),
                               ('前の画像',self.previous),('今回は飛ばす',self.skip),('完了して次へ',self.complete),('修正データをZIPへ',self.export)]:
             ttk.Button(top,text=label,command=command).pack(side='left',padx=3)
         self.status=tk.StringVar(value='保存済み画像を探しています…')
+        learning=ttk.Frame(root,padding=(8,0));learning.pack(fill='x')
+        ttk.Button(learning,text='修正ZIPを取り込む',command=self.import_reviews).pack(side='left',padx=3)
+        ttk.Button(learning,text='修正を集計・学習準備',command=self.prepare_reviews).pack(side='left',padx=3)
+        ttk.Button(learning,text='背景除外モデルの試験学習',command=self.train_reviews).pack(side='left',padx=3)
+        ttk.Label(learning,text='本番モデルは自動で変更しません。').pack(side='left',padx=8)
         root.report_callback_exception=lambda kind,value,tb:self.status.set('操作・保存に失敗しました：'+str(value))
         ttk.Label(root,textvariable=self.status,padding=8,wraplength=1250).pack(fill='x')
         ttk.Label(root,text='追加・描き直し：体の輪郭を順にクリック → Enterで確定。Escで中止。選択：輪郭の内側をクリック。完了は「見える蚕を確認し終えた」の意味です。',padding=8,wraplength=1250).pack(fill='x')
@@ -50,6 +56,8 @@ class ImprovementWindow:
         threading.Thread(target=scan,daemon=True).start();root.after(80,self.poll)
     def poll(self):
         if self.closed:return
+        if self.work_result is not None:
+            self.status.set(self.work_result);self.work_result=None
         if self.scan_result is True:
             self.scan_result=None;self.advance()
         elif isinstance(self.scan_result,str):self.status.set(self.scan_result);self.scan_result=None
@@ -65,6 +73,7 @@ class ImprovementWindow:
                                              'polygon':c.contour.reshape(-1,2).tolist(),'origin':'model',
                                              'visibility':'unknown','review_status':'unreviewed'} for c in result['candidates']]
                         self.queue.original=__import__('copy').deepcopy(self.queue.objects)
+                        self.queue.baseline_available=True
                         self.queue.save(False);self.refresh();self.status.set('自動候補を表示しました。見逃し・誤検出を直してください。')
                 if self.pending_auto:self.pending_auto=False;self.analyze()
         self.root.after(80,self.poll)
@@ -151,6 +160,8 @@ class ImprovementWindow:
         self.queue.current=None;self.queue.position-=2;self.cancel();self.advance()
     def analyze(self):
         if self.queue.current is None:return
+        if self.work_thread is not None and self.work_thread.is_alive():
+            self.status.set('学習準備・試験学習が終わってから再解析できます。');return
         from ai_measurement import AIWorker,AIJob
         from measurement import Settings
         if self.worker is None:self.worker=AIWorker()
@@ -162,14 +173,46 @@ class ImprovementWindow:
             paths,count=self.queue.export();self.status.set(f'{count}枚の修正を{len(paths)}個のZIPへ保存しました：{paths[0].parent}')
             if __import__('os').name=='nt':__import__('os').startfile(str(paths[0].parent))
         except Exception as exc:messagebox.showerror('修正データ',str(exc))
+    def background(self,task):
+        if self.work_thread is not None and self.work_thread.is_alive():self.status.set('前の処理が動いています。');return
+        if self.worker and self.worker.busy:self.status.set('画像の解析が終わってから実行してください。');return
+        def run():
+            try:self.work_result=task()
+            except Exception as exc:self.work_result='処理できません：'+str(exc)
+        self.status.set('修正データを処理しています。完了すると結果を表示します。')
+        self.work_thread=threading.Thread(target=run,daemon=False);self.work_thread.start()
+    def import_reviews(self):
+        paths=filedialog.askopenfilenames(title='完了した修正ZIPを選択',filetypes=[('修正ZIP','*.zip')])
+        if not paths:return
+        def task():
+            from review_learning import import_exports
+            r=import_exports(self.queue.data,paths)
+            return f'取り込み {r["imported"]}枚／重複 {r["duplicates"]}枚／競合 {r["conflicts"]}枚。既存の修正は上書きしません。'
+        self.background(task)
+    def prepare_reviews(self):
+        def task():
+            from review_learning import prepare
+            folder,r=prepare(self.queue.data)
+            return f'完了 {r["images"]}枚・蚕 {r["reviewed_objects"]}領域／追加 {r["added_objects"]}・削除 {r["deleted_objects"]}。学習 {r["train_images"]}枚、検証 {r["validation_images"]}枚、保留 {r["pending_images"]+r["quarantined_images"]}枚。結果：{folder}'
+        self.background(task)
+    def train_reviews(self):
+        def task():
+            from pathlib import Path
+            from review_learning import prepare,train_candidate
+            folder,r=prepare(self.queue.data)
+            run,result=train_candidate(folder,Path(__file__).parent/'models/kaiko_texture.pt')
+            before,after=result['before'],result['candidate']
+            return f'試験学習完了。検証画素の蚕再現率 {before["foreground_recall"]:.1%}→{after["foreground_recall"]:.1%}、背景正解率 {before["background_specificity"]:.1%}→{after["background_specificity"]:.1%}。頭数の精度ではありません。本番未変更。結果：{run}'
+        self.background(task)
     def close(self):
         if self.queue.current is not None:self.queue.save(False)
         self.closed=True
-        if self.worker:
-            self.worker.close()
-            def finish():self.worker.thread.join();self.lock.release()
-            threading.Thread(target=finish,daemon=False).start()
-        else:self.lock.release()
+        if self.worker:self.worker.close()
+        def finish():
+            if self.worker:self.worker.thread.join()
+            if self.work_thread:self.work_thread.join()
+            self.lock.release()
+        threading.Thread(target=finish,daemon=False).start()
         self.root.destroy()
 
 
