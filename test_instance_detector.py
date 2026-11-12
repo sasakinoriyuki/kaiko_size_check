@@ -64,6 +64,18 @@ class InstanceTests(unittest.TestCase):
         cs=measure_proposals([{'mask':mask,'offset':(30,30),'score':.55}],(300,500))
         self.assertIsNone(cs[0].length_px);self.assertEqual(cs[0].reason,'low_confidence')
 
+    def test_black_frame_clears_all_previous_instance_metadata(self):
+        engine=LocalInstanceSegmenter.__new__(LocalInstanceSegmenter)
+        engine.device='test';engine.last_info={'estimated_count':8,'measurable_count':6,
+                                            'visible_segment_count':2,'thin_recheck_matches':1}
+        engine.predict=lambda *a,**k:self.fail('black frame used the detector')
+        cs,_=engine.analyze(np.zeros((240,320,3),np.uint8),Settings())
+        self.assertEqual(cs,[])
+        for key in ['estimated_count','measured_count','unmeasured_count','uncertain_regions',
+                    'detected_count','measurable_count','visible_segment_count','thin_recheck_matches']:
+            self.assertEqual(engine.last_info[key],0,key)
+        self.assertEqual(engine.last_info['effective_roi'],[0,0,320,240])
+
     def test_recheck_seeds_reject_round_fragmented_and_too_large_objects(self):
         thin=np.zeros((80,70),np.uint8);cv2.line(thin,(10,10),(60,70),1,9)
         round_mask=np.zeros((80,80),np.uint8);cv2.circle(round_mask,(40,40),25,1,-1)

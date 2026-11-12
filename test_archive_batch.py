@@ -51,6 +51,25 @@ class BatchTests(unittest.TestCase):
     def setUp(self):
         patcher=patch('archive_batch.load_completion_keys',return_value=set());patcher.start();self.addCleanup(patcher.stop)
 
+    def test_dark_input_after_a_body_records_zero_counts_in_csv_and_zip(self):
+        from instance_detector import LocalInstanceSegmenter
+        e=LocalInstanceSegmenter.__new__(LocalInstanceSegmenter)
+        e.device='test';e.metadata={'model_version':'blank-transition-fixture'};e.model_sha256='fixture'
+        mask=np.zeros((30,210),np.uint8);cv2.line(mask,(15,15),(195,15),1,16)
+        e.predict=lambda *a,**k:[{'mask':mask,'offset':(30,30),'box':(30,30,240,60),'score':.95} for _ in range(8)]
+        with tempfile.TemporaryDirectory() as folder:
+            batch=ArchiveBatch(folder,e)
+            bright=batch.analyze_image(np.full((240,320,3),150,np.uint8),{},VIDEO,1,2)
+            dark=batch.analyze_image(np.zeros((240,320,3),np.uint8),{},VIDEO,2,2)
+            self.assertEqual(bright['estimated_count'],1)
+            self.assertEqual(dark['estimated_count'],0)
+            self.assertEqual(dark['full_length_count'],0)
+            _,info=read_sample_zip(Path(folder)/dark['sample_zip'])
+            self.assertEqual(info['model_info']['estimated_count'],0)
+            self.assertEqual(info['model_info']['instances'],[])
+            with Path(folder,'results.csv').open(encoding='utf-8-sig',newline='') as f:
+                self.assertEqual([r['estimated_count'] for r in csv.DictReader(f)],['1','0'])
+
     def test_urls_cannot_select_other_hosts_files_or_commands(self):
         for value in ['file:///etc/passwd','https://evil.example/watch?v='+VIDEO,'https://youtube.com.evil.example/'+VIDEO,
                       'https://a:b@youtube.com/watch?v='+VIDEO,'https://youtube.com/watch?v=../../x',
