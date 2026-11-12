@@ -74,10 +74,34 @@ def run(installed_root,expected_version,rounds=3):
         completed();assert np.array_equal(app.frame,cases[names[-1]])
         assert app.ppmm is None and app.data==installed_root/'data'
         assert (app.data/'counts.csv').is_file()
+        # Geometry fixture checks per-animal pixel/cm rendering and CSV output;
+        # it is deliberately independent of biological model predictions.
+        from instance_geometry import measure_proposals
+        from body_dimensions import populate_body_widths,dimension_text
+        import csv
+        app.reset_source('dimension_fixture.png')
+        app.frame=np.full((300,500,3),180,np.uint8)
+        mask=np.zeros((40,240),np.uint8);cv2.line(mask,(20,20),(220,20),1,18)
+        app.candidates=measure_proposals([{'mask':mask,'offset':(80,100),'score':.95}],app.frame.shape)
+        app.candidates[0].instance_id=1;app.ppmm=5;app.paused=True;app.ai_mode='single'
+        populate_body_widths(app.candidates)
+        app.publish_candidates('auto_instance_estimate',force_record=True);root.update()
+        text=app.items.get(0)
+        assert 'px' in text and 'cm' in text and '×' in text
+        c=app.candidates[0];assert abs(c.width_px-19)<1
+        assert dimension_text(c,5) in text
+        with (app.data/'individual_sizes.csv').open(encoding='utf-8-sig',newline='') as stream:
+            sizes=list(csv.DictReader(stream))
+        assert abs(float(sizes[-1]['body_width_cm'])-c.width_px/50)<1e-6
+        sample=app.save_sample();_,dimensions=read_sample_zip(sample)
+        assert abs(dimensions['individual_sizes'][0]['body_width_cm']-c.width_px/50)<1e-6
+        app.ppmm=None;app.publish_candidates('auto_instance_estimate',force_record=True)
+        assert 'cm' not in app.items.get(0) and 'px' in app.items.get(0)
         report={'release':expected_version,'rounds':rounds,'cases':results,
                 'zip_reopened_and_reanalyzed':True,'portable_data':True,
                 'synthetic_inputs_only':True,'biological_accuracy_test':False,
-                'runtime':app.last_model_info['runtime']}
+                'individual_pixel_and_cm_dimensions':True,
+                'runtime':info['runtime']}
         print(json.dumps(report),flush=True)
         return report
     finally:
