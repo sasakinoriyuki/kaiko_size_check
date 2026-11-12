@@ -4,6 +4,7 @@ on:
     branches: [school, parsonal]
     paths:
       - '.updates/channel.json'
+      - 'test_*.py'
       - 'automation/windows_release_check.py'
       - 'automation/runtime_gui_check.py'
       - '.github/workflows/windows_release_check.yml'
