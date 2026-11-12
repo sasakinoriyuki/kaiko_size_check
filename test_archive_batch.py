@@ -280,9 +280,12 @@ class BatchTests(unittest.TestCase):
             module.return_value.get_ffmpeg_exe.return_value='fixture-ffmpeg'
             yt,ffmpeg=prepare_tools(folder,object(),fetch=fetch)
             self.assertIn('--target',calls[0]);self.assertNotIn('--user',calls[0]);self.assertIn('--no-cache-dir',calls[0])
-            self.assertTrue(Path(calls[0][calls[0].index('--target')+1]).is_relative_to(folder))
-            self.assertTrue(Path(os.environ['TEMP']).is_relative_to(folder))
-            self.assertTrue(Path(os.environ['DENO_DIR']).is_relative_to(folder))
+            # Windows temporary paths may pass through a junction or short
+            # alias. Compare the exact canonical portable destinations.
+            expected_root=Path(folder).resolve()/'runtime/archive_tools'
+            self.assertEqual(Path(calls[0][calls[0].index('--target')+1]),expected_root)
+            self.assertEqual(Path(os.environ['TEMP']),expected_root/'tmp')
+            self.assertEqual(Path(os.environ['DENO_DIR']),expected_root/'deno_cache')
             self.assertEqual(ffmpeg,['fixture-ffmpeg']);self.assertIn('--js-runtimes',yt)
             self.assertTrue(Path(folder,'runtime/archive_tools',name).exists())
 
