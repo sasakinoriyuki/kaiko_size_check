@@ -47,6 +47,9 @@ class Candidate:
     visible_path: np.ndarray | None = None
     visible_length_px: float | None = None
     visible_note: str = ""
+    width_px: float | None = None
+    visible_width_px: float | None = None
+    width_evaluated: bool = False
 
 
 def polyline_length(points):

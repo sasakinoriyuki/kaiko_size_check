@@ -28,6 +28,7 @@ import numpy as np
 from collect_youtube_samples import find_tool, youtube_samples, _run
 from measurement import Settings
 from archive_history import completion_key,load_completion_keys
+from body_dimensions import dimension_record
 
 SEED_VIDEOS = ['0rijis5y8c0', 'RzZ0gH6DMF8', 'pbcVIyIBjig']
 VIDEO = re.compile(r'^[A-Za-z0-9_-]{11}$')
@@ -287,6 +288,7 @@ class ArchiveBatch:
         info['instances']=[{'id':c.instance_id,'counted':c.counted,'confidence':c.confidence,
                            'count_reason':c.count_reason,'length_px':c.length_px,'reason':c.reason,
                            'visible_length_px':c.visible_length_px,'visible_note':c.visible_note,
+                           **dimension_record(c),
                            'contour_source_xy':c.contour.reshape(-1,2).tolist(),
                            'centerline_source_xy':None if c.path is None else c.path.tolist(),
                            'visible_centerline_source_xy':None if c.visible_path is None else c.visible_path.tolist()} for c in candidates]

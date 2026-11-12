@@ -8,6 +8,7 @@ from pathlib import Path
 import queue
 import re
 import threading
+import tempfile
 import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -22,6 +23,7 @@ from measurement import Settings, analyze, calibrate, channel_roi, demo_frame, p
 from ai_measurement import AIJob, AIWorker
 from instance_counting import count_summary
 from visible_measurement import visible_segment_count
+from body_dimensions import DIMENSION_COLUMNS,dimension_record,dimension_text,populate_body_widths
 
 BASE = Path(__file__).resolve().parent
 
@@ -187,7 +189,7 @@ class App:
                                   values=(["自動計測（1〜5齢）", "自作モデル（試験）", "自作輪郭（比較）", "自作輪郭（以前のv6）", "色と形（試験）"] + ([] if os.environ.get("KAIKO_ONE_CLICK") == "1" else ["MobileSAM（従来）"])), state="readonly", width=24)
         engine_menu.pack(side="left", padx=5)
         engine_menu.bind("<<ComboboxSelected>>", self.change_ai_engine)
-        ttk.Label(engines, text="自動計測：画像・カメラを開くと開始。mm表示には基準線を設定します。").pack(side="left", padx=8)
+        ttk.Label(engines, text="自動計測：画像・カメラを開くと開始。個体のcm表示には基準線を設定します。").pack(side="left", padx=8)
         ai = ttk.Frame(self.root, padding=(8, 5))
         ai.pack(fill="x")
         ttk.Button(ai, text="AIでこの画面を解析", command=self.start_ai_once).pack(side="left")
@@ -239,22 +241,26 @@ class App:
         content = ttk.Frame(self.root, padding=8)
         content.pack(fill="both", expand=True)
         content.columnconfigure(0, weight=1)
-        content.columnconfigure(1, weight=0, minsize=300)
+        content.columnconfigure(1, weight=0, minsize=360)
         content.rowconfigure(0, weight=1)
         self.canvas = tk.Canvas(content, width=960, height=540, bg="#15201d", highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="nsew")
         self.canvas.bind("<Button-1>", self.click)
         self.canvas.bind("<Button-3>", self.click)
         self.canvas.bind("<Configure>", lambda event: self.render())
-        side = ttk.Frame(content, width=300, padding=(12, 0))
+        side = ttk.Frame(content, width=360, padding=(12, 0))
         side.grid(row=0, column=1, sticky="ns")
         side.pack_propagate(False)
         self.result = tk.StringVar()
         ttk.Label(side, textvariable=self.result, font=("Yu Gothic UI", 13), justify="left", wraplength=280).pack(anchor="w")
-        self.items = tk.Listbox(side, width=32, height=8)
-        self.items.pack(fill="x", pady=10)
+        listing=ttk.LabelFrame(side,text='個体サイズ（体長×体幅）',padding=2)
+        listing.pack(fill='x',pady=10)
+        self.items = tk.Listbox(listing, width=40, height=8)
+        self.items.pack(fill="x")
+        scroll=ttk.Scrollbar(listing,orient='horizontal',command=self.items.xview)
+        scroll.pack(fill='x');self.items.configure(xscrollcommand=scroll.set)
         self.items.bind("<<ListboxSelect>>", self.select_prompt)
-        ttk.Label(side, text="番号：頭数に含めた個体\n緑：全長推定／黄点線：見える部分\n橙：全長保留／灰：頭数の要確認\n番号は画面内の仮番号です。", wraplength=280).pack(anchor="w")
+        ttk.Label(side, text="緑：全長推定／黄点線：見える部分\n橙：全長保留／灰：頭数の要確認\n体幅は胴体中央の推定幅です。\n番号は画面内の仮番号です。", wraplength=330).pack(anchor="w")
         ttk.Label(side, text="平均長の推移（この起動内・測定できた個体）", wraplength=280).pack(anchor="w", pady=(16, 3))
         self.chart = tk.Canvas(side, width=280, height=150, bg="white", highlightthickness=0)
         self.chart.pack()
@@ -629,6 +635,7 @@ class App:
             "candidate_method": ("mobile_sam" if self.mode == "ai_point" else self.selected_ai_engine()) if self.mode == "ai_point" or getattr(self, "ai_mode", "off") != "off" else "threshold",
             "candidate_status": "unverified",
             "model_info": getattr(self, 'last_model_info', {}) or None,
+            "individual_sizes":[dimension_record(c,self.ppmm) for c in getattr(self,'candidates',[]) if c.counted],
             "calibration_points_source_xy": self.calibration_points,
             "manual_points_source_xy": self.points if self.mode == "manual" else [],
             "note": "Source pixels without overlays. Detection candidates are not ground-truth labels.",
@@ -801,7 +808,7 @@ class App:
                                  if result.get(key) is not None} if job.backend.startswith('scratch') or job.backend == 'instance' else {})
         if job.backend == 'instance':
             self.last_model_info.update(result.get('measurement_info',{}))
-            self.last_model_info['instances'] = [{'id':c.instance_id,'counted':c.counted,'confidence':c.confidence,'count_reason':c.count_reason,'length_px':c.length_px,'reason':c.reason,'visible_length_px':c.visible_length_px,'visible_note':c.visible_note} for c in result['candidates']]
+            self.last_model_info['instances'] = [{'id':c.instance_id,'counted':c.counted,'confidence':c.confidence,'count_reason':c.count_reason,'length_px':c.length_px,'reason':c.reason,'visible_length_px':c.visible_length_px,'visible_note':c.visible_note,**dimension_record(c,self.ppmm)} for c in result['candidates']]
         self.candidates = result["candidates"]
         self.mask = result.get("preview_mask") if job.backend.startswith("scratch_preview") else None
         self.show_mask.set(False)
@@ -935,14 +942,25 @@ class App:
                          'visible_segment_length':None if c.visible_length_px is None else c.visible_length_px/scale,
                          'full_length_reason':c.reason,'visible_note':c.visible_note,
                          'pixels_per_mm':self.ppmm,'confidence':c.confidence,
-                         'model_version':info.get('model_version'),'model_sha256':info.get('model_sha256')})
+                         'model_version':info.get('model_version'),'model_sha256':info.get('model_sha256'),
+                         **dimension_record(c,self.ppmm)})
         if not rows:return True
         path=self.data/'individual_sizes.csv';fields=list(rows[0])
         try:
             header=not path.exists() or path.stat().st_size==0
             if not header:
                 with path.open(encoding='utf-8-sig',newline='') as f:
-                    if next(csv.reader(f),None)!=fields:raise ValueError('個体サイズCSVの列が一致しません。')
+                    old_fields=next(csv.reader(f),None)
+                if old_fields!=fields:
+                    legacy=[name for name in fields if name not in DIMENSION_COLUMNS]
+                    if old_fields!=legacy:raise ValueError('個体サイズCSVの列が一致しません。')
+                    handle,name=tempfile.mkstemp(prefix='.individual_sizes-',suffix='.tmp',dir=self.data)
+                    try:
+                        with os.fdopen(handle,'w',encoding='utf-8-sig',newline='') as output,path.open(encoding='utf-8-sig',newline='') as original:
+                            writer=csv.DictWriter(output,fieldnames=fields);writer.writeheader()
+                            for old in csv.DictReader(original):writer.writerow(old)
+                        os.replace(name,path)
+                    finally:Path(name).unlink(missing_ok=True)
             with path.open('a',encoding='utf-8-sig',newline='') as f:
                 writer=csv.DictWriter(f,fieldnames=fields)
                 if header:writer.writeheader()
@@ -969,18 +987,21 @@ class App:
         span = f"{stats['min']:.1f}〜{stats['max']:.1f} {unit}" if stats["count"] else "--"
         scale = "基準設定済み" if self.ppmm is not None else "基準未設定（px）"
         if method == 'auto_instance_estimate':
+            populate_body_widths(self.candidates,self.frame.shape)
             counts=count_summary(self.candidates)
             partials=visible_segment_count(self.candidates)
-            self.result.set(prefix + f"頭数推定 {counts['estimated_count']} 頭（画面内）\n頭数の要確認 {counts['uncertain_regions']} 候補\n全長推定 {counts['measured_count']} 匹分\n全長保留 {counts['unmeasured_count']} 頭（可視部 {partials} 頭）\n全長平均 {mean}\n最小〜最大 {span}\n{scale}")
+            size_scale='基準設定済み（個体はpx／cm）' if self.ppmm is not None else 'cm表示：①の基準線を設定'
+            self.result.set(prefix + f"頭数推定 {counts['estimated_count']} 頭（画面内）\n頭数の要確認 {counts['uncertain_regions']} 候補\n全長推定 {counts['measured_count']} 匹分\n全長保留 {counts['unmeasured_count']} 頭（可視部 {partials} 頭）\n全長平均 {mean}\n最小〜最大 {span}\n{size_scale}")
             self.items.delete(0,'end')
             reasons={'low_confidence':'検出の確信度不足','edge':'画面端','fragmented':'輪郭の欠け','branch':'輪郭の分岐','loop':'輪郭の重なり','overlap':'個体の重なり','overlap_at_end':'頭尾の重なり','shape':'形状確認','short':'小さすぎる','outside_mask':'中心線の確認','rechecked_body':'拡大再確認・頭尾は未確認'}
             for c in self.candidates:
                 if not c.counted:continue
                 label=f'{c.instance_id:02d}' if c.instance_id is not None else '—'
-                detail=(f'全長 {c.length_px/(self.ppmm or 1):.1f} {unit}' if c.length_px is not None else
-                        f'可視部 {c.visible_length_px/(self.ppmm or 1):.1f} {unit}・全長不明' if c.visible_length_px is not None else
+                dimensions=dimension_text(c,self.ppmm)
+                detail=(f'全長 {dimensions}' if c.length_px is not None else
+                        f'可視部 {dimensions}（全長不明）' if c.visible_length_px is not None else
                         '全長保留：'+reasons.get(c.reason,c.reason))
-                self.items.insert('end',f'個体 {label}   {detail}')
+                self.items.insert('end',f'{label} {detail}')
             stamp=datetime.now().astimezone().strftime('%H:%M:%S')
             self.write_obs(f"蚕CHANNEL | 自動計測・推定 {stamp}\n画面内の頭数推定 {counts['estimated_count']}頭\n全長平均 {mean}（{counts['measured_count']}匹分）\n全長保留 {counts['unmeasured_count']}頭・可視部のみ {partials}頭\n頭数の要確認 {counts['uncertain_regions']}候補\n{scale}")
             now=time.monotonic()

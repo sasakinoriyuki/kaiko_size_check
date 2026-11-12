@@ -13,6 +13,7 @@ from ai_measurement import content_view
 from instance_geometry import merge_views,measure_proposals,intersection
 from instance_counting import assign_instance_ids
 from visible_measurement import estimate_visible_segments,visible_segment_count
+from body_dimensions import populate_body_widths,WIDTH_METHOD
 
 MODEL_URL='https://raw.githubusercontent.com/BillTheDing/YOLOv8-DSRI/18085596e7e950cac86b377807f05046c6b9a2cf/yolov8-main/YOLOv8-DSRI.pt'
 MODEL_SHA256='ddd6e7d9fb2911588f4e6d13fc78a2680f585c95ec13c1e651ba6b3197a8e217'
@@ -117,9 +118,10 @@ class LocalInstanceSegmenter:
         self.device='cuda' if torch.cuda.is_available() else 'cpu'
         self.model=load_detector(ensure_instance_model(model_path),self.device)
         self.model_sha256=MODEL_SHA256
-        self.metadata={'model_version':'DSRI instances + bounded thin-body recheck v5',
+        self.metadata={'model_version':'DSRI instances + body dimensions v6',
                        'inference_threshold':.35,'pretrained':True,'model_source':'YOLOv8-DSRI / AGPL-3.0',
                        'measurement_status':'automatic_estimate','stages':'1-5; hatchling validation pending'}
+        self.metadata['body_width_method']=WIDTH_METHOD
         self.last_info={}
         self.runtime_info={'device':self.device,'python_version':platform.python_version(),
                            'torch_version':str(torch.__version__),
@@ -273,6 +275,7 @@ class LocalInstanceSegmenter:
                 filtered=merge_views(proposals+extras,view.shape)
                 candidates=measure_proposals(filtered,view.shape,merged=True)
         estimate_visible_segments(filtered,candidates)
+        populate_body_widths(candidates,view.shape)
         for c in candidates:
             c.contour=c.contour+np.asarray(offset)
             if c.path is not None:c.path=c.path+np.asarray(offset)
