@@ -117,7 +117,7 @@ class LocalInstanceSegmenter:
         self.device='cuda' if torch.cuda.is_available() else 'cpu'
         self.model=load_detector(ensure_instance_model(model_path),self.device)
         self.model_sha256=MODEL_SHA256
-        self.metadata={'model_version':'DSRI instances + bounded thin-body recheck v4',
+        self.metadata={'model_version':'DSRI instances + bounded thin-body recheck v5',
                        'inference_threshold':.35,'pretrained':True,'model_source':'YOLOv8-DSRI / AGPL-3.0',
                        'measurement_status':'automatic_estimate','stages':'1-5; hatchling validation pending'}
         self.last_info={}
@@ -210,6 +210,16 @@ class LocalInstanceSegmenter:
     def analyze(self,frame,settings,roi=None):
         settings.validate()
         effective=roi or automatic_camera_roi(frame)
+        # Empty/dark inputs must not inherit the preceding frame's headcount,
+        # measurements or recheck evidence in GUI ZIPs and archive CSVs.
+        self.last_info={'effective_roi':list(effective),'small_body_search':False,
+                        'measurement_status':'automatic_estimate','detected_count':0,
+                        'measurable_count':0,'confidence_threshold':.35,'inference_views':0,
+                        'count_thresholds':{'whole':.6,'small_with_texture_guard':.6,'detail_only':.85},
+                        'visible_segment_count':0,
+                        'visible_segment_policy':'longest_continuous_piece; full-length means exclude partials',
+                        'thin_recheck_seeds':0,'thin_recheck_views':0,'thin_recheck_matches':0,
+                        **assign_instance_ids([])}
         view,offset=content_view(frame,effective)
         if view is None:return [],self.device
         proposals=self.predict(view)

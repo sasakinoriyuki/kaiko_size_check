@@ -97,13 +97,23 @@ def run(channel):
             logs='\n'.join(p.read_text(encoding='utf-8-sig',errors='replace') for p in (root/'logs').glob('setup_*.txt'))
             assert str(school_python/'python.exe') in logs
         interpreter=root/environments[-1]/'Scripts/python.exe'
+        modules=['test_measurement','test_instance_geometry','test_instance_counting',
+                 'test_visible_measurement','test_app','test_ai_measurement',
+                 'test_instance_detector','test_archive_batch','test_archive_review']
+        check_code=("import sys,unittest;sys.path.insert(0,sys.argv[1]);"
+                    "suite=unittest.defaultTestLoader.loadTestsFromNames("+repr(modules)+
+                    ");result=unittest.TextTestRunner(verbosity=1).run(suite);"
+                    "raise SystemExit(0 if result.wasSuccessful() else 1)")
+        subprocess.run([str(interpreter),'-I','-X','utf8','-c',check_code,str(SOURCE)],
+                       cwd=root,env=env,check=True,timeout=180)
         subprocess.run([str(interpreter),'-I','-X','utf8',str(SOURCE/'automation/runtime_gui_check.py'),
                         '--installed-root',str(root),'--expected-version',info['version'],'--rounds','3'],
                        cwd=root,env=env,check=True,timeout=240)
         report={'channel':channel,'release':info['version'],'signed_bat_fresh_and_repeat_start':True,
                 'same_runtime_reused':True,'old_data_preserved':True,'one_unchanged_bat':True,
                 'portable_storage':True,'school_fixed_python_executed':channel=='school',
-                'windows_ci':True,'user_photos_or_records_uploaded':False}
+                'windows_ci':True,'core_regression_modules_passed':modules,
+                'user_photos_or_records_uploaded':False}
         print(json.dumps(report),flush=True)
         return report
     finally:
